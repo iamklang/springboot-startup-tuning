@@ -30,7 +30,7 @@ classes, CDS / AOT cache (tier 3) is where most of the gain is, not bean tuning.
 | `spring.jpa.open-in-view` | Not startup itself, but a warning and an interceptor; turn off while you are in here | `false` |
 | `spring.jpa.database-platform` + `spring.jpa.properties.hibernate.boot.allow_jdbc_metadata_access=false` | Lets Hibernate skip the JDBC metadata round-trip at boot (Hibernate 6.2+) | Set both |
 | `spring.jpa.defer-datasource-initialization` / `spring.sql.init.mode` | SQL scripts executed at start | `never` in prod |
-| `spring.datasource.hikari.minimum-idle` | Pool pre-fills idle connections synchronously in some setups | Small or default; do not pre-fill 20 |
+| `spring.datasource.hikari.minimum-idle` | Only the first connection is opened during startup; the rest fill in the background | Leave default; not a startup lever |
 | `spring.datasource.hikari.initialization-fail-timeout` | Default 1 blocks until first connection succeeds; `-1` skips the check | Keep default in prod (fail fast), `-1` only when the DB is legitimately not needed at boot |
 | `spring.flyway.*` / `spring.liquibase.*` | Migration runs on every start; on a big changelog, checksum validation alone is slow | Keep, but know its cost from the startup timeline; consider running migrations as a separate job |
 | `spring.main.lazy-initialization` | Beans created on first use | `true` only in dev/test profiles unless the user accepts first-request latency and late failures |

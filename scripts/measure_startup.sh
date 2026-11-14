@@ -110,4 +110,4 @@ if [ -n "$CSV" ]; then
   printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"%s"\n' "$(date -u +%FT%TZ)" "$LABEL" "$RUNS" "$sm" "$smin" "$smax" "$pm" "$pmin" "$pmax" "$rm_" "$rmin" "$rmax" "$(echo "$*" | tr '"' "'")" >>"$CSV"
   echo "appended to $CSV"
 fi
-[ "$KEEP" -eq 1 ] && echo "logs: $LOGDIR" || rmdir "$LOGDIR" 2>/dev/null
+if [ "$KEEP" -eq 1 ]; then echo "logs: $LOGDIR"; else rmdir "$LOGDIR" 2>/dev/null; fi

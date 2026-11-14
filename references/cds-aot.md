@@ -50,8 +50,10 @@ What changes at runtime:
 1. Extract the jar so the classpath is stable between runs:
 
 ```bash
-java -Djarmode=tools -jar target/app.jar extract --destination target/extracted
+java -Djarmode=tools -jar target/<artifact>-<version>.jar extract --destination target/extracted --application-filename app.jar
 ```
+
+The extracted jar keeps the original file name unless `--application-filename` is given; every command below assumes `app.jar`.
 
 2. Training run. The app must start fully and then exit; `-XX:ArchiveClassesAtExit` writes the
 archive when the JVM exits. Boot's `extract` layout plus `-Dspring.context.exit=onRefresh` makes the
@@ -69,6 +71,8 @@ java -XX:ArchiveClassesAtExit=target/app.jsa \
 ```bash
 java -XX:SharedArchiveFile=target/app.jsa -Dspring.aot.enabled=true -jar target/extracted/app.jar
 ```
+
+A cheap check without starting the app: `java -Xshare:on -XX:SharedArchiveFile=target/app.jsa -XX:+PrintSharedArchiveAndExit -jar target/extracted/app.jar` ends with `archive is valid`, or exits non-zero with the mismatch reason.
 
 Add `-Xshare:on` while verifying: with it the JVM fails loudly when the archive is rejected
 instead of silently falling back. Remove it for production (`-Xshare:auto` default) so a mismatch
@@ -106,7 +110,7 @@ FROM eclipse-temurin:21-jdk AS build
 WORKDIR /app
 COPY . .
 RUN ./mvnw -q -DskipTests package
-RUN java -Djarmode=tools -jar target/*.jar extract --destination target/extracted
+RUN java -Djarmode=tools -jar target/*.jar extract --destination target/extracted --application-filename app.jar
 
 FROM eclipse-temurin:21-jre AS train
 WORKDIR /app

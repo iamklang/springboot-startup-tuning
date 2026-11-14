@@ -85,8 +85,15 @@ if [ -n "$K8S" ]; then
     grep -nE 'cpu:|memory:|startupProbe|readinessProbe|livenessProbe|initialDelaySeconds|failureThreshold|periodSeconds|JAVA_TOOL_OPTIONS|JAVA_OPTS' "$f" | sed 's/^/  /'
   done
 else
-  echo "no k8s Deployment manifests found under $ROOT (helm values may hold them: $(ls -d */values*.y*ml helm 2>/dev/null | tr '\n' ' '))"
+  helm=$(find . -maxdepth 3 \( -name 'values*.yaml' -o -name 'values*.yml' -o -name Chart.yaml \) -not -path '*/node_modules/*' 2>/dev/null | head -5 | tr '\n' ' ')
+  echo "no k8s Deployment manifests found under $ROOT${helm:+ (helm files that may hold them: $helm)}"
 fi
 
 section "Built artifacts"
-ls -1 target/*.jar build/libs/*.jar 2>/dev/null | grep -vE 'plain|sources|javadoc' | sed 's/^/  /' || echo "  none built yet"
+found=0
+for j in target/*.jar build/libs/*.jar; do
+  [ -f "$j" ] || continue
+  case "$j" in *plain*|*sources*|*javadoc*) continue;; esac
+  echo "  $j"; found=1
+done
+[ "$found" -eq 1 ] || echo "  none built yet"
