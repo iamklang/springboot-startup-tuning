@@ -1,0 +1,12 @@
+schema_version: "1.1"
+name: first-request-warmup
+expected_outcome: |
+  Separates startup from warm-up and names the causes of slow first requests (lazy one-time init
+  in Spring and libraries such as DispatcherServlet, Jackson, Bean Validation and Hibernate, class
+  loading, and JIT warm-up starved by the 1-CPU limit). Proposes measuring latency of the first N
+  requests from readiness (measure_first_requests.sh or equivalent) and under open-model load.
+  Recommends a readiness-gated warm-up that sends real idempotent HTTP requests to localhost from
+  an ApplicationRunner, explains why readiness stays down until runners return, and warns about
+  side effects in a payment service. Recommends CPU headroom for warm-up with ActiveProcessorCount,
+  a startupProbe covering startup plus warm-up, Istio DestinationRule warmup (slow start), and
+  notes that an onRefresh-trained CDS/AOT cache does not help warm-up. Does not invent numbers.

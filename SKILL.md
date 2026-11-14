@@ -1,6 +1,6 @@
 ---
 name: springboot-startup-tuning
-description: "Review, measure and tune the startup time of a Spring Boot project: scan the project's config and dependencies, build it, measure cold-start time over several runs, sweep CPU limits (Docker --cpus or JVM ActiveProcessorCount) to find how much CPU the app needs to start, then apply safe tuning changes (auto-config exclusions, JPA/Hikari knobs, lazy init, JVM flags, Spring AOT, CDS / JDK AOT cache) one at a time, re-measure, keep only what helps, and write a before/after report with Kubernetes requests/limits/probe recommendations. Use this whenever the user talks about a Spring Boot app starting slowly, startup time, boot time, cold start, 'Started X in N seconds', readiness/startup probes failing, CPU requests/limits for a Java service, CDS, Spring AOT, Project Leyden, CRaC, or asks how fast / how much CPU their Spring service needs — even if they only say 'ทำให้ start เร็วขึ้น' or 'app ขึ้นช้า'."
+description: "Review, measure and tune a Spring Boot project's startup time and first-request warm-up: scan config and dependencies, measure cold start over several runs, sweep CPU limits (Docker --cpus or ActiveProcessorCount) to find the CPU it needs, apply safe changes (auto-config exclusions, JPA/Hikari knobs, lazy init, JVM flags, Spring AOT, CDS / JDK AOT cache) one at a time and keep only what helps, measure latency of the first requests after readiness and add a readiness-gated warm-up, then report with Kubernetes requests/limits, probes and slow-start advice. Use whenever the user mentions slow Spring Boot startup, boot time, cold start, 'Started X in N seconds', failing readiness/startup probes, CPU requests/limits for a Java service, CDS, Spring AOT, Leyden, CRaC, JVM warm-up, slow first requests or latency spikes after deploy, even if they only say 'app ขึ้นช้า' or 'request แรกช้า'."
 ---
 
 # Spring Boot startup tuning
@@ -24,9 +24,12 @@ All scripts live in `scripts/` next to this file. Call them with absolute paths.
 | `cpu_sweep.sh --image IMG [--env-file F] [--mem 1g] [-o sweep.csv]` or `--jar app.jar --jvm-only` | Measures startup under several CPU limits and reports the knee point where more CPU stops helping. Docker mode also reports CPU-seconds consumed by the start, and refuses an image whose architecture does not match the host. |
 | `startup_report.py <actuator-startup.json or URL>` | Ranks the slowest startup steps and bean instantiations from the `/actuator/startup` endpoint. |
 | `autoconfig_report.py <log with debug=true>` | Lists positive auto-configurations from the CONDITIONS EVALUATION REPORT and flags ones that are often unnecessary. |
+| `measure_first_requests.sh -R 3 -n 100 -r READY_URL -u URL [-u URL] [-o CSV] [-d CURVE_CSV] -- <java args>` | Restarts the app R times, waits for readiness, sends N sequential requests over the given URLs, and reports request 1, the mean of requests 2 to 10, steady state and the first/steady ratio. Without java args it measures an app that is already running. |
+
+`assets/WarmupRunner.java` is a readiness-gated warm-up runner template for Step 5.
 
 Read `references/review-checklist.md` during the review step, `references/cds-aot.md` when you
-reach tier 3, and `references/kubernetes.md` when writing the CPU recommendation. Use
+reach tier 3, and `references/kubernetes.md` when writing the CPU recommendation, and `references/warmup.md` in Step 5. Use
 `references/report-template.md` for the final report.
 
 ## Workflow
@@ -130,7 +133,24 @@ Choose by versions found in Step 0:
 - CRaC (Boot 3.2+, Linux only, CRaC-enabled JDK): tens of milliseconds restore, but open connections, secrets in the snapshot and operational complexity. Fit for scale-to-zero and serverless.
 - GraalVM native image: sub-100 ms start, long builds, reflection hints needed, lower peak throughput. Fit for CLIs and functions, rarely for a large monolith.
 
-### Step 5: Report and Kubernetes recommendation
+### Step 5: First-request latency and warm-up
+
+Do this step when the user asks about slow first requests, latency or errors right after deploy or
+scale-out, or warm-up; when the review found global lazy init in production; or when the user asks
+for the whole job. Otherwise mention it in one line of the report and skip it. Read
+`references/warmup.md` first.
+
+1. **W0 baseline:** `measure_first_requests.sh` against 2 to 5 real, idempotent hot-path URLs, gated on `/actuator/health/readiness`, with the configuration kept from Step 4. If first/steady is below about 3 and requests 2 to 10 are near steady, report that warm-up is not a problem here and stop the step.
+2. **W1 CPU:** repeat W0 at the limits from Step 3. A big gain from 1 to 2 CPUs points to CPU headroom during warm-up (W5) as the main fix.
+3. **W2 Spring settings:** `spring.mvc.servlet.load-on-startup=1`, lazy init off, Hikari `minimum-idle` equal to max. One at a time, with the keep rule from Step 4 applied to request 1 and the 2-to-10 mean.
+4. **W3 warm-up runner:** copy `assets/WarmupRunner.java`, set its package and the `app.warmup.*` properties, pointing at the same hot paths. Re-measure both the first-N curve and the `ready` time from `measure_startup.sh -u`, because warm-up moves time from the first requests to before readiness. Report both numbers. Confirm with the user that every warm-up path is free of side effects.
+5. **W4 to W8:** write recommendations (startupProbe covering startup plus warm-up at the CPU request, rollout settings, CPU headroom or startup CPU boost, AOT cache trained on real requests, LB slow start, CRaC) from `references/warmup.md`. Apply the AOT cache training change only if tier 3 already uses an AOT cache and the training run can reach what the requests need.
+
+The sequential curl curve shows the one-time costs. It does not show the JIT tail under load; say
+so, and give the user the open-model load-test command (k6 `constant-arrival-rate`, vegeta or wrk2
+at the real per-pod rate) to run in staging.
+
+### Step 6: Report and Kubernetes recommendation
 
 Write the report with `references/report-template.md` into the workspace dir and summarise it in
 chat. If writing the report file is refused, put the full report in your final message instead and
@@ -139,6 +159,7 @@ say that it was not saved; do not look for another way to write the file. The re
 - The CPU sweep table and the recommended startup CPU with the CPU-seconds floor argument.
 - The exact diffs applied (file and property), and the list of findings not applied with reasons.
 - k8s guidance from `references/kubernetes.md`: requests/limits strategy, `startupProbe` sized as measured startup at the chosen limit times 1.5, and the Prometheus throttling query to verify after deploy.
+- If Step 5 ran: the first-N table (request 1, requests 2 to 10, steady, first/steady, ready time) for each configuration, and the warm-up recommendations W4 to W8.
 - What was approximated (for example `--jvm-only` sweep, no DB available, measured on a laptop not the cluster node).
 
 Numbers belong in tables, not in sentences. Report failures honestly: if the app would not start without infrastructure you did not have, say what was skipped.
@@ -150,5 +171,5 @@ Numbers belong in tables, not in sentences. Report failures honestly: if the app
 - Before a local Docker sweep, check that the image architecture matches the Docker host (`cpu_sweep.sh` refuses otherwise). An amd64 image on Apple Silicon runs under emulation and every number is wrong by a large, unknown factor.
 - If cluster startup is much slower than the CPU-seconds floor predicts, the extra time is waiting, not computing: DB connection across the VPC, Flyway, remote config, DNS, Kafka metadata, cloud credential lookups (IRSA / instance metadata timeouts). The `/actuator/startup` timeline shows these as long single steps with little CPU. More CPU will not fix them.
 - If the baseline is already under about 3 seconds on 2 cores and the timeline has no single step above a few hundred milliseconds, tell the user early that tier 3 is the main lever left and ask whether it is worth the Dockerfile change.
-- When the user only wants a review, stop after Step 1 and Step 2 and hand over the findings; do not start changing files.
+- When the user only wants a review, stop after Step 1 and Step 2 (and W0 of Step 5 if they asked about first requests) and hand over the findings; do not start changing files.
 - Use the scripts' own timeouts (`-t`). macOS has no `timeout` command, and a missing command silently skips whatever it wraps.

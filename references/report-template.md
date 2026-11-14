@@ -36,6 +36,17 @@ For each: file, exact property or code change, measured effect, runtime behaviou
 | Finding | Why not applied | Expected gain | Who decides |
 |---|---|---|---|
 
+## First requests after readiness (Step 5, if run)
+
+| Label | Request 1 ms | Requests 2-10 mean ms | Steady ms | First/steady | Ready ms | Kept |
+|---|---|---|---|---|---|---|
+| baseline | | | | | | |
+| +warm-up runner | | | | | | |
+
+Warm-up recommendations: startupProbe covering startup plus warm-up at the CPU request, rollout
+settings, CPU headroom, AOT cache trained on real requests, LB slow start. Say that the curl
+curve does not show the JIT tail under load, and give the load-test command for staging.
+
 ## Kubernetes recommendation
 
 ```yaml

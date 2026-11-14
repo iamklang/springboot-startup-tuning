@@ -7,6 +7,10 @@ CPU the app needs to start, applies tuning changes one tier at a time (config, J
 AOT, CDS / JDK AOT cache), keeps only changes that beat the run-to-run noise, and writes a
 before/after report with Kubernetes requests, limits and probe settings.
 
+It also handles slow first requests after startup: it measures latency of the first N requests
+from readiness, adds a readiness-gated warm-up runner, and recommends CPU headroom, probes and
+load-balancer slow start for the warm-up period.
+
 ## Install
 
 Copy or clone this folder to `~/.claude/skills/springboot-startup-tuning/`.
@@ -14,9 +18,10 @@ Copy or clone this folder to `~/.claude/skills/springboot-startup-tuning/`.
 ## Contents
 
 - `SKILL.md`: the workflow
-- `scripts/`: `project_scan.sh`, `measure_startup.sh`, `cpu_sweep.sh`, `startup_report.py`, `autoconfig_report.py`
-- `references/`: review checklist, CDS / AOT / Leyden guide, Kubernetes CPU and probe guide, report template
-- `evals/`: three test cases in the `claude plugin eval` layout
+- `scripts/`: `project_scan.sh`, `measure_startup.sh`, `cpu_sweep.sh`, `startup_report.py`, `autoconfig_report.py`, `measure_first_requests.sh`
+- `references/`: review checklist, CDS / AOT / Leyden guide, Kubernetes CPU and probe guide, first-request warm-up guide, report template
+- `assets/WarmupRunner.java`: readiness-gated warm-up runner template
+- `evals/`: four test cases in the `claude plugin eval` layout
 
 ## Requirements
 
