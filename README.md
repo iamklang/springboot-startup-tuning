@@ -11,6 +11,11 @@ It also handles slow first requests after startup: it measures latency of the fi
 from readiness, adds a readiness-gated warm-up runner, and recommends CPU headroom, probes and
 load-balancer slow start for the warm-up period.
 
+For services already running at scale it measures cost per request at a fixed arrival rate
+(open-model load, CPU ms and KB allocated per request, p99) and tunes JVM heap, processors and GC,
+database and HTTP client pools, hot-path allocation, and Kubernetes requests, limits, pod shape
+and autoscaling.
+
 ## Install
 
 Copy or clone this folder to `~/.claude/skills/springboot-startup-tuning/`.
@@ -18,10 +23,10 @@ Copy or clone this folder to `~/.claude/skills/springboot-startup-tuning/`.
 ## Contents
 
 - `SKILL.md`: the workflow
-- `scripts/`: `project_scan.sh`, `measure_startup.sh`, `cpu_sweep.sh`, `startup_report.py`, `autoconfig_report.py`, `measure_first_requests.sh`
-- `references/`: review checklist, CDS / AOT / Leyden guide, Kubernetes CPU and probe guide, first-request warm-up guide, report template
+- `scripts/`: `project_scan.sh`, `measure_startup.sh`, `cpu_sweep.sh`, `startup_report.py`, `autoconfig_report.py`, `measure_first_requests.sh`, `measure_efficiency.sh`, `loadgen.py`
+- `references/`: review checklist, CDS / AOT / Leyden guide, Kubernetes CPU and probe guide, first-request warm-up guide, steady-state runtime tuning guide, report template
 - `assets/WarmupRunner.java`: readiness-gated warm-up runner template
-- `evals/`: four test cases in the `claude plugin eval` layout
+- `evals/`: five test cases in the `claude plugin eval` layout
 
 ## Requirements
 

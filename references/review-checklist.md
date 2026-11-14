@@ -80,3 +80,23 @@ class; use grep to confirm what the timeline points at.
 - HPA minimum replicas and `terminationGracePeriodSeconds` do not affect startup but matter for rollout time; mention only if asked.
 - `JAVA_TOOL_OPTIONS` in the pod env overriding the Dockerfile flags.
 - Liveness probe on plain `/actuator/health`: the aggregate includes the database and other dependencies, so a DB blip restarts every pod. Use `/actuator/health/liveness` and `/actuator/health/readiness`.
+
+## Runtime efficiency (Step 6)
+
+Not startup costs, but read the same files for them while you are here and record them for Step 6.
+
+| Look for | Why it costs at runtime | Action |
+|---|---|---|
+| No `MaxRAMPercentage` / `-Xmx` in the Dockerfile or `JAVA_TOOL_OPTIONS` | Max heap is 25 percent of the container memory | `-XX:MaxRAMPercentage=75 -XX:InitialRAMPercentage=75` when memory request equals limit; less with many threads or direct buffers |
+| No CPU limit and no `-XX:ActiveProcessorCount` | The JVM sizes GC, JIT and common-pool threads for every core on the node | Set `ActiveProcessorCount` to the CPU request rounded up, at least 2 |
+| Pod with less than 2 CPUs or about 1.8 GB and no GC flag | The JVM silently runs SerialGC | Pick the GC explicitly and measure |
+| `maximum-pool-size` × replicas (and HPA max) above the database's `max_connections` | Connection storms, refused connections at scale-out | Small pool per pod, sized from the HikariCP guideline |
+| `RestClient`/`RestTemplate` on Apache HttpClient 5 without a custom connection manager | 5 connections per route, 25 total | Set max-per-route, total and all three timeouts |
+| Outbound clients with no timeouts | Threads or virtual threads pile up behind a slow downstream | Connect, read and pool-acquire timeouts on every client |
+| `spring.threads.virtual.enabled=true` on JDK 21 to 23 | `synchronized` pins carrier threads (fixed by JEP 491 in JDK 24) | JDK 25, or leave platform threads |
+| `GenerationType.IDENTITY` on entities inserted in bulk | Disables JDBC insert batching | SEQUENCE with a pooled optimizer, `hibernate.jdbc.batch_size`, `order_inserts` |
+| HTTP or messaging calls inside `@Transactional` methods | Holds a DB connection for the whole remote call | Move the remote call outside the transaction |
+| Unbounded caches (`new ConcurrentHashMap` caches, Caffeine without `maximumSize`) | Heap grows with traffic until GC thrash or OOM | Bound size and expiry |
+| String concatenation in log calls, payload logging, `%L`/`%M` or caller data in log patterns | CPU and allocation per request, even when the level is off for concatenation | Parameterized logging, no payloads, no location info |
+| Metric tags built from user IDs, raw paths or request input | Unbounded cardinality, memory growth | Bounded tag values only |
+| `percentiles-histogram` off for `http.server.requests` | p99 cannot be computed across pods | Turn it on for the service's main timers |

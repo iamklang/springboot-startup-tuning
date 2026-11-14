@@ -47,6 +47,18 @@ Warm-up recommendations: startupProbe covering startup plus warm-up at the CPU r
 settings, CPU headroom, AOT cache trained on real requests, LB slow start. Say that the curl
 curve does not show the JIT tail under load, and give the load-test command for staging.
 
+## Steady-state cost per request (Step 6, if run)
+
+Rate: <req/s>, warm-up <s>, measured <s>, runs per configuration: <n>.
+
+| Label | p99 ms | p99.9 ms | CPU ms/req | KB alloc/req | RSS MB | Heap MB | Kept |
+|---|---|---|---|---|---|---|---|
+| baseline | | | | | | | |
+
+Pool and client findings (DB pool × replicas vs `max_connections`, HTTP client pools and
+timeouts, transactions holding connections), allocation hot spots from the profile, and the
+staging capacity-test procedure for absolute numbers.
+
 ## Kubernetes recommendation
 
 ```yaml

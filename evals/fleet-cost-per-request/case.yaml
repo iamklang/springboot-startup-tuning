@@ -1,0 +1,12 @@
+schema_version: "1.1"
+name: fleet-cost-per-request
+expected_outcome: |
+  Diagnoses the configuration as a set: with no JVM flags the heap is 25% of 2Gi and the 1-CPU
+  pod runs SerialGC; the 1-CPU limit throttles; Hikari 30 x up to 200 pods can exceed Postgres
+  max_connections; HttpClient 5 defaults to 5 connections per route; CPU-based HPA reacts to JIT
+  warm-up. Proposes measuring cost per request at a fixed arrival rate with an open-model tool
+  (CPU ms and allocation per request, p99/p99.9), one change at a time against a control, plus a
+  staging capacity test for max RPS per pod at the SLO. Recommends heap/processor flags, an
+  explicit GC, NMT for non-heap before changing the memory limit, a small DB pool sized against
+  max_connections, client pool and timeouts, wider pods without a CPU limit (with
+  ActiveProcessorCount), HPA on RPS, and the PromQL to verify. Does not invent measured numbers.

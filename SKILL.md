@@ -1,6 +1,6 @@
 ---
 name: springboot-startup-tuning
-description: "Review, measure and tune a Spring Boot project's startup time and first-request warm-up: scan config and dependencies, measure cold start over several runs, sweep CPU limits (Docker --cpus or ActiveProcessorCount) to find the CPU it needs, apply safe changes (auto-config exclusions, JPA/Hikari knobs, lazy init, JVM flags, Spring AOT, CDS / JDK AOT cache) one at a time and keep only what helps, measure latency of the first requests after readiness and add a readiness-gated warm-up, then report with Kubernetes requests/limits, probes and slow-start advice. Use whenever the user mentions slow Spring Boot startup, boot time, cold start, 'Started X in N seconds', failing readiness/startup probes, CPU requests/limits for a Java service, CDS, Spring AOT, Leyden, CRaC, JVM warm-up, slow first requests or latency spikes after deploy, even if they only say 'app ขึ้นช้า' or 'request แรกช้า'."
+description: "Review, measure and tune a Spring Boot service: startup time, first-request warm-up, and steady-state CPU, memory and latency per request at scale. Scans config and dependencies, measures cold start over several runs, sweeps CPU limits to find the CPU it needs, applies safe changes (auto-config exclusions, JPA/Hikari, JVM flags, Spring AOT, CDS / JDK AOT cache, warm-up runner, GC and heap sizing, pool limits) one at a time, measures at a fixed request rate and keeps only what helps, then reports with Kubernetes requests/limits, probes, pod shape and autoscaling advice. Use whenever the user mentions slow Spring Boot startup, cold start, failing probes, CPU/memory requests or limits for a Java service, CDS, AOT, CRaC, warm-up, slow first requests, p99 latency, throughput, GC tuning, OOMKilled, cost per request or a large Spring Boot fleet, even if they only say 'app ขึ้นช้า', 'request แรกช้า' or 'ทำให้เร็วขึ้น ใช้ resource น้อยลง'."
 ---
 
 # Spring Boot startup tuning
@@ -26,10 +26,13 @@ All scripts live in `scripts/` next to this file. Call them with absolute paths.
 | `autoconfig_report.py <log with debug=true>` | Lists positive auto-configurations from the CONDITIONS EVALUATION REPORT and flags ones that are often unnecessary. |
 | `measure_first_requests.sh -R 3 -n 100 -r READY_URL -u URL [-u URL] [-o CSV] [-d CURVE_CSV] -- <java args>` | Restarts the app R times, waits for readiness, sends N sequential requests over the given URLs, and reports request 1, the mean of requests 2 to 10, steady state and the first/steady ratio. Without java args it measures an app that is already running. |
 
+| `measure_efficiency.sh -r RATE [-w 30] [-d 60] -R READY_URL -u URL [-u URL] [-o CSV] (-p PID \| -- <java args>)` | Runs a fixed-rate warm-up and measured phase (open model) and reports p50/p99/p99.9, CPU ms per request, KB allocated per request, RSS and heap used. |
+| `loadgen.py -r RATE -d SECONDS URL...` | The open-model load generator used by `measure_efficiency.sh`; latency is measured from each request's scheduled time, so stalls are not hidden. |
+
 `assets/WarmupRunner.java` is a readiness-gated warm-up runner template for Step 5.
 
 Read `references/review-checklist.md` during the review step, `references/cds-aot.md` when you
-reach tier 3, and `references/kubernetes.md` when writing the CPU recommendation, and `references/warmup.md` in Step 5. Use
+reach tier 3, and `references/kubernetes.md` when writing the CPU recommendation, `references/warmup.md` in Step 5, and `references/runtime-tuning.md` in Step 6. Use
 `references/report-template.md` for the final report.
 
 ## Workflow
@@ -150,7 +153,24 @@ The sequential curl curve shows the one-time costs. It does not show the JIT tai
 so, and give the user the open-model load-test command (k6 `constant-arrival-rate`, vegeta or wrk2
 at the real per-pod rate) to run in staging.
 
-### Step 6: Report and Kubernetes recommendation
+### Step 6: Steady-state runtime efficiency
+
+Do this step when the user asks about throughput, p99 latency, GC, memory or OOMKilled, CPU or cost
+per request, or tuning a large fleet; or when they ask for the whole job. Read
+`references/runtime-tuning.md` first. The unit of every comparison is cost per request at a fixed
+arrival rate, never maximum throughput from a closed-model tool.
+
+1. **R0 baseline:** `measure_efficiency.sh` at a rate near the real per-pod rate, against the same hot-path URLs as Step 5, with `metrics` exposed. Repeat 3 times. Record p99, p99.9, CPU ms per request, KB allocated per request, RSS and heap used. If the user has production metrics, also write down the PromQL values from the reference for the same service.
+2. **R1 JVM:** in this order, one change at a time against a same-batch control: heap and processor flags (`MaxRAMPercentage`/`InitialRAMPercentage`, `ActiveProcessorCount` when there is no CPU limit), GC choice for the pod size and latency target, and on JDK 25 `-XX:+UseCompactObjectHeaders`. Recommend a JDK upgrade when the project is on an older LTS; do not change the JDK in the build without asking.
+3. **R2 Spring and pools:** check pods × Hikari `maximum-pool-size` against the database's `max_connections`, `open-in-view`, Hibernate batching and IDENTITY ids, explicit timeouts and pool sizes on every outbound HTTP client (Apache HC5 defaults to 5 per route), and remote calls inside `@Transactional`. Turn on virtual threads only on JDK 24+ and only after the pools are sized.
+4. **R3 allocation:** if CPU or allocation per request is high, take a short allocation and wall-clock profile (JFR: `jcmd <pid> JFR.start duration=60s settings=profile filename=app.jfr` while `measure_efficiency.sh` runs) and look for the hot-path sources listed in the reference (logging, Jackson, boxing, regex, exceptions). Report findings with file and line; change code only when the user agrees.
+5. **R4 Kubernetes:** write requests, limits, pod shape and autoscaling recommendations from the measured CPU ms per request, the target RPS per pod and the reference: CPU request from measured usage, no CPU limit for latency-sensitive services with `ActiveProcessorCount`, memory request equal to limit from heap plus measured non-heap, 2 to 4 vCPU pods, HPA on RPS or in-flight requests.
+
+A laptop run shows relative differences between configurations, not production capacity. Give the
+user the staging capacity-test procedure from the reference (k6 `ramping-arrival-rate`, one pod with
+production resources, max RPS per pod at the SLO, then a soak test) for the absolute numbers.
+
+### Step 7: Report and Kubernetes recommendation
 
 Write the report with `references/report-template.md` into the workspace dir and summarise it in
 chat. If writing the report file is refused, put the full report in your final message instead and
@@ -160,6 +180,7 @@ say that it was not saved; do not look for another way to write the file. The re
 - The exact diffs applied (file and property), and the list of findings not applied with reasons.
 - k8s guidance from `references/kubernetes.md`: requests/limits strategy, `startupProbe` sized as measured startup at the chosen limit times 1.5, and the Prometheus throttling query to verify after deploy.
 - If Step 5 ran: the first-N table (request 1, requests 2 to 10, steady, first/steady, ready time) for each configuration, and the warm-up recommendations W4 to W8.
+- If Step 6 ran: the per-request table (rate, p99, p99.9, CPU ms/req, KB/req, RSS, heap) for each configuration, the pool and client findings, and the R4 recommendations.
 - What was approximated (for example `--jvm-only` sweep, no DB available, measured on a laptop not the cluster node).
 
 Numbers belong in tables, not in sentences. Report failures honestly: if the app would not start without infrastructure you did not have, say what was skipped.
