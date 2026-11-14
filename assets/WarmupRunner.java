@@ -63,6 +63,7 @@ public class WarmupRunner implements ApplicationRunner {
     Instant start = Instant.now();
     int sent = 0;
     int failed = 0;
+    int non2xx = 0;
     outer:
     for (int i = 0; i < iterations; i++) {
       for (String path : paths) {
@@ -76,8 +77,19 @@ public class WarmupRunner implements ApplicationRunner {
               .GET()
               .build();
           HttpResponse<Void> res = client.send(req, HttpResponse.BodyHandlers.discarding());
-          if (res.statusCode() >= 500) {
+          int status = res.statusCode();
+          if (status >= 500) {
             failed++;
+            if (failed == 1) {
+              log.warn("warm-up request to {} returned {}", path, status);
+            }
+          } else if (status < 200 || status >= 300) {
+            // 401/403: endpoint needs auth; 404: wrong path or missing ID. Either way it warms
+            // only part of the request path.
+            non2xx++;
+            if (non2xx == 1) {
+              log.warn("warm-up request to {} returned {}; it warms only part of the path", path, status);
+            }
           }
         } catch (Exception e) {
           failed++;
@@ -88,7 +100,7 @@ public class WarmupRunner implements ApplicationRunner {
         sent++;
       }
     }
-    log.info("warm-up done: {} requests, {} failed, {} ms", sent, failed,
+    log.info("warm-up done: {} requests, {} failed, {} non-2xx, {} ms", sent, failed, non2xx,
         Duration.between(start, Instant.now()).toMillis());
   }
 }

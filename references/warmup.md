@@ -77,32 +77,71 @@ Each one is a single property or a small change. Measure each with the first-N c
 
 ## 4. In-app warm-up gated by readiness (W3)
 
-Template: `assets/WarmupRunner.java`. Copy it into the app's main package, change the package,
-and set:
+### How it works
+
+Spring Boot runs startup in this order:
+1. It creates the beans and starts the embedded web server, which already accepts connections.
+2. It runs every `ApplicationRunner` and `CommandLineRunner`. Readiness still answers 503.
+3. When all runners have returned, it publishes `ReadinessState.ACCEPTING_TRAFFIC`, readiness answers 200, and Kubernetes starts routing traffic.
+
+`assets/WarmupRunner.java` runs in step 2. It calls the app's own endpoints over HTTP on
+`127.0.0.1:<local.server.port>`, so every request goes through filters, security, MVC, Jackson,
+validation and JPA while no user traffic can arrive. Liveness is already CORRECT, so the pod is not
+restarted during warm-up. Calling service methods directly would skip the web layer and warm much
+less.
+
+### Install
+
+1. Copy the template into the main class's package or a sub-package, so component scan finds it:
+   `cp <skill>/assets/WarmupRunner.java src/main/java/<pkg path>/`
+2. Replace `package CHANGE_ME;` with the real package.
+3. Add the properties to the production configuration (or the profile used in the cluster):
 
 ```yaml
 app:
   warmup:
-    enabled: true          # off in tests and local dev unless measuring
+    enabled: true
     paths: /api/orders?customer=1,/api/products/42
-    iterations: 50         # 40 to 120 requests per path is the range in the case studies
-    max-duration: 20s      # hard budget; must fit inside the startupProbe window
+    iterations: 50
+    max-duration: 20s
+management:
+  endpoint.health.probes.enabled: true   # exposes /actuator/health/readiness and /liveness
 ```
 
-Why it works: Spring Boot publishes `ReadinessState.ACCEPTING_TRAFFIC` only after every
-`ApplicationRunner` and `CommandLineRunner` returns, and the embedded server is already listening
-while runners run. A synchronous runner that calls its own endpoints over HTTP on 127.0.0.1
-therefore exercises the full stack (filters, security, MVC, Jackson, validation, JPA) while the
-readiness probe still answers 503 and no user traffic arrives. Liveness is already CORRECT, so it
-does not restart the pod. Calling service methods directly skips the web layer and warms much less.
+4. The runner is off when `enabled` is absent. If it is turned on in the main `application.yml`, set `app.warmup.enabled: false` in the test profile so tests do not slow down.
 
-Rules to tell the user and to check in review:
-- Only idempotent requests. Use GET, or POST to validate-only or dry-run endpoints. No writes, no messages sent, no calls to payment or other side-effecting services.
+| Property | Meaning |
+|---|---|
+| `enabled` | Turns the runner on. Missing means off. |
+| `paths` | Comma-separated paths, query strings allowed, no commas inside a path. |
+| `iterations` | Rounds. Each round calls every path once, so total requests = iterations × number of paths (100 in the example). 40 to 120 requests per path is the range in the case studies. |
+| `max-duration` | Hard time budget. The runner stops when it runs out, even mid-round. It must fit inside the startupProbe window. |
+
+### Choosing paths
+
+- Pick 2 to 5 of the most-called endpoints: one that queries the database, one that serializes a large DTO, one with validation. Use the same URLs as the `-u` arguments of `measure_first_requests.sh`, so the measurement shows the effect.
+- Only idempotent reads. The template sends GET only. No path may write data, send a message, or call another service. Confirm this with the user for every path, and refuse payment, order-creation or notification endpoints.
+- Use IDs that exist in every environment. A 404 returns before the service and repository code run, so it warms only part of the path.
+- Endpoints behind authentication answer 401 to the template, which warms only the filter chain. Choose public read endpoints, or add a warm-up credential header that the app reads from its own configuration (for example a client-credentials token for a local-only scope). Never disable security for warm-up, and never put a real user's token in config.
+- To warm a validated POST, extend the template to send a deliberately invalid body that Bean Validation rejects with 400. First check that nothing writes or calls out before validation runs (no `@Transactional` work in a filter or an interceptor ahead of the controller).
+
+### Verify
+
+- The startup log ends the warm-up with one line:
+  `warm-up done: 100 requests, 0 failed, 0 non-2xx, 850 ms`
+  `failed` counts HTTP 5xx and connection errors. `non-2xx` counts every other non-2xx answer, usually 401 or 404 from a wrong path, a missing ID or missing auth. Both should be 0. The first problem of each kind is logged as a warning with its path.
+- Measure with `measure_first_requests.sh` twice, `--app.warmup.enabled=false` then `true`, with the same `-u` URLs, R and N. Compare request 1, the mean of requests 2 to 10 and first/steady.
+- Measure the `ready` time with `measure_startup.sh -u .../actuator/health/readiness` too. Warm-up moves time from the first user requests to before readiness, and the report must show both sides. On the demo app request 1 fell from 57.6 ms to 2.5 ms and readiness came about 0.25 s later.
+- Size the startupProbe for startup plus `max-duration` (section 5).
+
+### Rules to tell the user and to check in review
+
 - Never fail startup because warm-up failed. The template logs and continues.
-- If security requires auth, add a local-only warm-up credential from the app's own config, or warm public read endpoints only. Do not disable security.
-- Exclude warm-up requests from business metrics and access logs where it matters (the template sends `X-Warmup: true`).
+- The template has no `@Order`, so it runs after the app's other runners (data loading, cache priming). Keep it that way unless the user has a reason.
+- Exclude warm-up requests from business metrics and access logs where it matters. The template sends `X-Warmup: true` on every request.
 - If the warm-up must run asynchronously, the app has to keep readiness down itself: publish `AvailabilityChangeEvent.publish(ctx, ReadinessState.REFUSING_TRAFFIC)` before and `ACCEPTING_TRAFFIC` after. Prefer the synchronous runner.
-- Under Spring AOT, `management.endpoint.health.probes.enabled=true` must be set explicitly, because cloud-platform detection is fixed at build time.
+- Under Spring AOT, set `management.endpoint.health.probes.enabled=true` explicitly, because cloud-platform detection is fixed at build time.
+- With a low CPU limit the warm-up itself is throttled and helps little. Fix CPU headroom (W5) first or together.
 
 Expect this to remove the one-time costs (request 1 drops close to the 2-to-10 mean) but not the
 whole C2 warm-up, which needs far more calls than a short warm-up sends. Slow start (W7) or CPU
@@ -111,6 +150,18 @@ headroom (W5) covers the rest.
 ## 5. Probes, CPU headroom and rollout on Kubernetes (W4, W5)
 
 - **startupProbe** must cover startup plus warm-up, measured at the CPU *request*, not the limit, because a busy node gives only the request. `failureThreshold = ceil((startup + warm-up) * 1.5 / periodSeconds)`. Point it and the readiness probe at `/actuator/health/readiness`. Keep liveness on `/actuator/health/liveness` and never put the warm-up state in the liveness group.
+  Example for 8 s startup plus a 20 s warm-up budget, ceil(28 × 1.5 / 5) = 9, rounded up for margin:
+
+  ```yaml
+  startupProbe:
+    httpGet: { path: /actuator/health/readiness, port: 8080 }
+    periodSeconds: 5
+    failureThreshold: 12
+  readinessProbe:
+    httpGet: { path: /actuator/health/readiness, port: 8080 }
+  livenessProbe:
+    httpGet: { path: /actuator/health/liveness, port: 8080 }
+  ```
 - **Rollout:** `maxSurge: 1`, `maxUnavailable: 0`, and `minReadySeconds` equal to the measured time to warm, so old warm pods are not removed before new ones have warmed.
 - **CPU headroom (W5),** pick one:
   - Burstable QoS: request at steady state, limit 2 to 4 times higher or no limit (see `kubernetes.md`). Simplest and the most effective lever in the case studies.
