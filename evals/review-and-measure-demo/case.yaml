@@ -1,0 +1,12 @@
+schema_version: "1.1"
+name: review-and-measure-demo
+expected_outcome: |
+  Builds the demo app once, measures a baseline over several runs with the bundled
+  measure_startup.sh (median, not a single run), gets the startup timeline from
+  /actuator/startup and identifies slowBean's 700 ms @PostConstruct sleep and the JPA
+  entityManagerFactory as the top costs, flags ddl-auto=update and the unused mail starter,
+  applies changes one at a time and re-measures each, keeps only changes that beat the
+  run-to-run spread, and writes a report with a before/after table, the list of reverted
+  changes, and caveats. Does not commit.
+context:
+  scaffold_script: place-files.sh

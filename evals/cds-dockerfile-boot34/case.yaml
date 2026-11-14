@@ -1,0 +1,11 @@
+schema_version: "1.1"
+name: cds-dockerfile-boot34
+expected_outcome: |
+  Produces a multi-stage Dockerfile that extracts the jar with -Djarmode=tools, runs a CDS
+  training run with -XX:ArchiveClassesAtExit and -Dspring.context.exit=onRefresh in a stage
+  using the same base image as the final stage, and runs with -XX:SharedArchiveFile and
+  -Dspring.aot.enabled=true. Adds the process-aot Maven execution. Warns that Spring AOT fixes
+  profiles and conditions at build time so the prod profile must be passed to the AOT step, that
+  Flyway will try to connect during the training run and needs handling, and that a JDK or
+  classpath mismatch silently drops the archive. Explains verification via -Xshare:on,
+  -Xlog:cds, the "Starting AOT-processed" log line, and re-measuring process-running-for time.

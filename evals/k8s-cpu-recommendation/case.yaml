@@ -1,0 +1,11 @@
+schema_version: "1.1"
+name: k8s-cpu-recommendation
+expected_outcome: |
+  Explains that the 500m limit makes the JVM see one CPU (single compiler thread, SerialGC) and
+  that the liveness probe fires before startup finishes, causing the restart loop. Proposes a
+  measurement plan using cpu_sweep.sh in Docker mode with the local image (and names the
+  --jvm-only fallback with its limitation if Docker is down), describes the CPU-seconds floor
+  argument, and gives a concrete manifest: a startupProbe sized from the measured startup at the
+  chosen limit times 1.5, readiness on /actuator/health/readiness, and either no CPU limit with a
+  low request or a limit at the knee. Mentions the Prometheus throttling query to verify after
+  deploy. Does not invent measured numbers it did not obtain.
