@@ -1,6 +1,6 @@
 # First-request latency and warm-up
 
-Read this in Step 6, when the problem is how slow the *first requests* are after the app is
+Read this in Step 5, when the problem is how slow the *first requests* are after the app is
 already up, not how long it takes to start. Symptoms: p99 spikes or 5xx right after every deploy
 or scale-out, a pod passes its readiness probe and then times out, HPA adds pods that are slow and
 burn CPU, or the user says "request แรกช้า" or "หลัง deploy ช้าอยู่พักหนึ่ง".
