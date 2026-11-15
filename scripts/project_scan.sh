@@ -36,7 +36,25 @@ for f in build.gradle build.gradle.kts; do
   fi
 done
 echo "local java: $(java -version 2>&1 | head -1)"
-if docker info >/dev/null 2>&1; then echo "docker: $(docker info --format "{{.ServerVersion}}" 2>/dev/null)"; else echo "docker: not running / not installed"; fi
+# docker info can exit non-zero (broken CLI plugin, server warnings) while the daemon works, so judge
+# by whether a server version comes back, and print the real error otherwise.
+if ! command -v docker >/dev/null 2>&1; then
+  echo "docker: not installed"
+else
+  dv=$(docker version --format '{{.Server.Version}}' 2>&1 | head -1)
+  if [[ "$dv" =~ ^[0-9]+\.[0-9] ]]; then
+    echo "docker: daemon up, server $dv (context: $(docker context show 2>/dev/null || echo default); status at scan time, re-check before a Docker sweep)"
+  else
+    echo "docker: CLI present, daemon unreachable: ${dv:-no output}"
+  fi
+fi
+NCPU=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)
+LOAD1=$( (sysctl -n vm.loadavg 2>/dev/null || cat /proc/loadavg 2>/dev/null) | tr -d '{}' | awk '{print $1}')
+MEMGB=$( (sysctl -n hw.memsize 2>/dev/null || awk '/MemTotal/{print $2*1024}' /proc/meminfo 2>/dev/null) | awk '{printf "%.0f", $1/1073741824}')
+echo "machine: ${NCPU} CPUs, ${MEMGB:-?} GB RAM, load1 ${LOAD1:-?}"
+if [ -n "${LOAD1:-}" ] && awk -v l="$LOAD1" -v n="$NCPU" 'BEGIN{exit !(l > n/2)}'; then
+  echo "  WARNING: load is above half the CPUs; startup numbers taken now will be slow and noisy"
+fi
 
 section "Starters and notable dependencies"
 if have pom.xml; then
@@ -60,6 +78,24 @@ find src/main/resources -maxdepth 1 \( -name 'application*.yml' -o -name 'applic
 
 section "Existing tuning-relevant properties (any profile)"
 grep_r -E 'lazy-initialization|lazy_initialization|ddl-auto|open-in-view|allow_jdbc_metadata_access|database-platform|autoconfigure\.exclude|jmx\.enabled|minimum-idle|initialization-fail-timeout|bootstrap-mode|sql\.init\.mode|defer-datasource-initialization|flyway\.enabled|liquibase\.enabled|exposure\.include|logging\.level\.root|^debug|banner-mode|spring\.aot|spring\.cache\.type' | sed 's/^/  /' || echo "  none"
+
+section "Spring Cloud and external config"
+CLOUD=$(grep -sohE 'spring-cloud-(starter-)?(config|bootstrap|starter-vault-config|starter-consul-config|kubernetes[a-z-]*config)[a-z-]*' pom.xml build.gradle build.gradle.kts 2>/dev/null | sort -u | tr '\n' ' ')
+echo "config clients: ${CLOUD:-none}"
+grep_r -nE 'spring\.config\.import|config\.import:|configserver:' | head -5 | sed 's/^/  /'
+RS=$(grep -rlE --include='*.java' --include='*.kt' '@RefreshScope' src/main 2>/dev/null | wc -l | tr -d ' ')
+echo "@RefreshScope classes: $RS"
+[ "$RS" -gt 0 ] && echo "  WARNING: Spring AOT does not support @RefreshScope; process-aot fails or refresh stops working. Set spring.cloud.refresh.enabled=false for AOT, or skip AOT (see cds-aot.md)"
+# Placeholders with no default (${name}, not ${name:default}) in @Value and config files.
+PH=$(grep -rhoE --include='*.java' --include='*.kt' --include='*.yml' --include='*.yaml' --include='*.properties' '\$\{[A-Za-z0-9_.-]+\}' src/main 2>/dev/null | sort -u)
+NPH=$(printf '%s' "$PH" | grep -c . )
+echo "placeholders without default: $NPH"
+if [ "$NPH" -gt 0 ]; then
+  printf '%s\n' "$PH" | head -15 | sed 's/^/  /'
+  [ "$NPH" -gt 15 ] && echo "  ... ($NPH total)"
+  echo "  Each one must resolve or startup fails. If they normally come from a config server or env, generate stubs:"
+  echo "  config_stub.py <project-dir> -o .startup-tuning/stub.properties   (some may already be set in application*.yml; the script checks)"
+fi
 
 section "Code patterns worth a look"
 echo "-- @PostConstruct / runners / startup listeners:"

@@ -20,6 +20,15 @@
 #   measure_startup.sh -n 5 -l cds -o .startup-tuning/results.csv -- -XX:SharedArchiveFile=app.jsa -jar target/extracted/app.jar
 #
 # Parses both Boot 3 ("process running for") and Boot 2 ("JVM running for") log lines.
+#
+# Safety checks:
+#   - Refuses an argument that looks like several options glued together ("-Xmx1g -jar app.jar").
+#     That is what zsh passes for an unquoted $VAR, because zsh does not word-split. Use bash,
+#     a bash array ("${ARGS[@]}"), or `bash -c '...'` for measurement loops.
+#   - A run whose Spring time is larger than its process time is impossible and is marked FAIL.
+#   - Prints the 1-minute load average and warns when it is above half the CPU count.
+#   - The last line is always "RESULT: OK ..." or "RESULT: FAIL ...", also on stderr for failures,
+#     and a failed batch still appends a CSV row with FAIL in the median columns.
 set -u
 RUNS=5; WARM=1; TIMEOUT=180; LABEL="run"; CSV=""; KEEP=0; HEALTH=""
 while getopts "n:w:t:l:o:ku:" opt; do
@@ -32,6 +41,37 @@ shift $((OPTIND-1))
 [ "${1:-}" = "--" ] && shift
 [ $# -eq 0 ] && { echo "usage: $0 [-n N] [-w W] [-t T] [-l LABEL] [-o CSV] -- <java args>" >&2; exit 2; }
 JAVA="${JAVA_BIN:-java}"
+ALL_ARGS="$*"
+
+fail_batch() {  # $1 = reason; report loudly, record a FAIL row, exit 1
+  echo "RESULT: FAIL label=$LABEL: $1"
+  echo "RESULT: FAIL label=$LABEL: $1" >&2
+  if [ -n "$CSV" ]; then
+    mkdir -p "$(dirname "$CSV")"
+    [ -s "$CSV" ] || echo "$HEADER" >"$CSV"
+    printf '%s,%s,%s,FAIL,,,FAIL,,,,,,"%s"%s\n' "$(date -u +%FT%TZ)" "$LABEL" "$RUNS" \
+      "$(echo "$ALL_ARGS" | tr '"' "'")" "$(csv_load_suffix)" >>"$CSV"
+    echo "appended FAIL row to $CSV" >&2
+  fi
+  exit 1
+}
+
+HEADER="timestamp,label,n,spring_median,spring_min,spring_max,process_median,process_min,process_max,ready_median,ready_min,ready_max,args,load1"
+NCPU=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)
+LOAD1=$( (sysctl -n vm.loadavg 2>/dev/null || cat /proc/loadavg 2>/dev/null) | tr -d '{}' | awk '{print $1}')
+LOAD1=${LOAD1:-NA}
+csv_load_suffix() {  # add load1 only to CSVs whose header has the column (older files keep their shape)
+  head -1 "$CSV" 2>/dev/null | grep -q ',load1$' && printf ',%s' "$LOAD1"
+}
+
+for a in "$@"; do
+  if [[ "$a" =~ ^-[^[:space:]]+[[:space:]]+- ]]; then
+    fail_batch "argument '$a' holds several options in one word. zsh does not split unquoted \$VAR; run the loop with bash or pass a bash array (\"\${ARGS[@]}\")"
+  fi
+done
+if [ "$LOAD1" != "NA" ] && awk -v l="$LOAD1" -v n="$NCPU" 'BEGIN{exit !(l > n/2)}'; then
+  echo "WARNING: load average $LOAD1 on $NCPU CPUs is high; numbers will be noisy and slow. Stop other work or wait, and re-measure the control in the same batch." >&2
+fi
 LOGDIR="$(mktemp -d "${TMPDIR:-/tmp}/startup-measure.XXXXXX")"
 
 now_ms() { perl -MTime::HiRes=time -e 'printf "%d", time*1000'; }
@@ -69,14 +109,17 @@ one_run() {  # $1 = run index, rest = java args; prints "spring process" seconds
   local spring process
   spring=$(echo "$line" | sed -E 's/.* in ([0-9.]+) seconds.*/\1/')
   process=$(echo "$line" | sed -E 's/.*running for ([0-9.]+)\).*/\1/')
+  if awk -v s="$spring" -v p="$process" 'BEGIN{exit !(s > p)}'; then
+    echo "FAIL implausible: spring=${spring}s > process=${process}s (Spring time is part of process time; check the log and the machine load, see $log)"; KEEP=1; return
+  fi
   echo "$spring $process $ready"
   [ "$KEEP" -eq 1 ] || rm -f "$log"
 }
 
-printf 'label=%s  java=%s\nargs: %s\n' "$LABEL" "$("$JAVA" -version 2>&1 | head -1)" "$*"
+printf 'label=%s  java=%s  load1=%s cpus=%s\nargs: %s\n' "$LABEL" "$("$JAVA" -version 2>&1 | head -1)" "$LOAD1" "$NCPU" "$*"
 for ((i=1; i<=WARM; i++)); do
   r=$(one_run "w$i" "$@")
-  case "$r" in FAIL*) echo "warm-up $i: $r"; tail -30 "$LOGDIR"/run-w$i.log 2>/dev/null; exit 1;; esac
+  case "$r" in FAIL*) echo "warm-up $i: $r"; tail -30 "$LOGDIR"/run-w$i.log 2>/dev/null; fail_batch "warm-up $i: ${r#FAIL }";; esac
   read -r ws wp wr <<<"$r"
   echo "warm-up $i: spring=${ws}s process=${wp}s ready=${wr} (discarded)"
 done
@@ -84,7 +127,7 @@ done
 SPRING=(); PROC=(); READY=()
 for ((i=1; i<=RUNS; i++)); do
   r=$(one_run "$i" "$@")
-  case "$r" in FAIL*) echo "run $i: $r"; tail -30 "$LOGDIR"/run-$i.log 2>/dev/null; exit 1;; esac
+  case "$r" in FAIL*) echo "run $i: $r"; tail -30 "$LOGDIR"/run-$i.log 2>/dev/null; fail_batch "run $i: ${r#FAIL }";; esac
   read -r rs rp rr <<<"$r"
   SPRING+=("$rs"); PROC+=("$rp"); [ "$rr" != "NA" ] && READY+=("$rr")
   echo "run $i: spring=${rs}s process=${rp}s ready=${rr}"
@@ -106,8 +149,9 @@ if [ ${#READY[@]} -gt 0 ]; then read -r rm_ rmin rmax _ <<<"$(stats "${READY[@]}
 echo "spread(process)=$(awk -v a="$pmax" -v b="$pmin" 'BEGIN{printf "%.3f", a-b}')s  n=$RUNS"
 if [ -n "$CSV" ]; then
   mkdir -p "$(dirname "$CSV")"
-  [ -s "$CSV" ] || echo "timestamp,label,n,spring_median,spring_min,spring_max,process_median,process_min,process_max,ready_median,ready_min,ready_max,args" >"$CSV"
-  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"%s"\n' "$(date -u +%FT%TZ)" "$LABEL" "$RUNS" "$sm" "$smin" "$smax" "$pm" "$pmin" "$pmax" "$rm_" "$rmin" "$rmax" "$(echo "$*" | tr '"' "'")" >>"$CSV"
+  [ -s "$CSV" ] || echo "$HEADER" >"$CSV"
+  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"%s"%s\n' "$(date -u +%FT%TZ)" "$LABEL" "$RUNS" "$sm" "$smin" "$smax" "$pm" "$pmin" "$pmax" "$rm_" "$rmin" "$rmax" "$(echo "$*" | tr '"' "'")" "$(csv_load_suffix)" >>"$CSV"
   echo "appended to $CSV"
 fi
 if [ "$KEEP" -eq 1 ]; then echo "logs: $LOGDIR"; else rmdir "$LOGDIR" 2>/dev/null; fi
+echo "RESULT: OK label=$LABEL process_median=${pm}s spring_median=${sm}s n=$RUNS load1=$LOAD1"

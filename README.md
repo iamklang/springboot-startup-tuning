@@ -23,7 +23,7 @@ Copy or clone this folder to `~/.claude/skills/springboot-startup-tuning/`.
 ## Contents
 
 - `SKILL.md`: the workflow
-- `scripts/`: `project_scan.sh`, `measure_startup.sh`, `cpu_sweep.sh`, `startup_report.py`, `autoconfig_report.py`, `measure_first_requests.sh`, `measure_efficiency.sh`, `loadgen.py`
+- `scripts/`: `project_scan.sh`, `measure_startup.sh`, `cpu_sweep.sh`, `startup_report.py`, `autoconfig_report.py`, `measure_first_requests.sh`, `measure_efficiency.sh`, `loadgen.py`, `config_stub.py`
 - `references/`: review checklist, CDS / AOT / Leyden guide, Kubernetes CPU and probe guide, first-request warm-up guide, steady-state runtime tuning guide, report template
 - `assets/WarmupRunner.java`: readiness-gated warm-up runner template
 - `evals/`: five test cases in the `claude plugin eval` layout

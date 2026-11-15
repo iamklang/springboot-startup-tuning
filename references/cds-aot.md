@@ -12,7 +12,7 @@ discipline between the training run and production.
 | 3.3 to 3.5 | 17 to 23 | Spring AOT + CDS (`-XX:SharedArchiveFile`) |
 | 3.3 to 3.5 | 24+ | Spring AOT + JDK AOT cache (`-XX:AOTCache`); CDS still works but the AOT cache supersedes it |
 | 4.x | 25+ | Spring AOT + JDK AOT cache, one-step `-XX:AOTCacheOutput` |
-| 3.0 to 3.2 | any | Spring AOT only (CDS by hand is possible but Boot has no `extract` tooling; recommend upgrading to 3.3+) |
+| 3.0 to 3.2 | 17+ | Spring AOT, plus CDS by hand (see "CDS on Boot 3.0 to 3.2" below); recommend upgrading to 3.3+ |
 | 2.x | any | Neither; report the upgrade as the real fix |
 
 ## Spring AOT (JVM mode)
@@ -43,6 +43,8 @@ What changes at runtime:
 - `@Profile`-switched beans, `@Conditional` on environment, and `BeanFactoryPostProcessor`s that register beans dynamically may need `RuntimeHints` or restructuring. If the app refuses to start under AOT, the error names the bean; check that first.
 - **Property-driven switches stop working.** `spring.flyway.enabled=false`, `spring.jpa.enabled`, `management.*.enabled` and any `@ConditionalOnProperty` toggle are evaluated during `process-aot`. Setting them at runtime or for the training run changes nothing. To skip work only during the training run, keep the bean and make its *behaviour* depend on a property value (see the Flyway pattern below).
 - **Cloud platform detection is fixed too.** `@ConditionalOnCloudPlatform(KUBERNETES)` is evaluated at build time, where the build is not on Kubernetes. The liveness/readiness health groups that Boot adds automatically on Kubernetes are then missing and probes on `/actuator/health/liveness` return 404. Set `management.endpoint.health.probes.enabled=true` explicitly in the production config.
+- **Spring Cloud.** `@RefreshScope` is not supported under AOT: `process-aot` fails or the refresh behaviour silently stops. Before trying AOT on an app with `spring-cloud-config` (or any `spring-cloud-*-config`), grep for `@RefreshScope` (`project_scan.sh` counts it). If refresh is not used at runtime, set `spring.cloud.refresh.enabled=false` for both `process-aot` and the run; if it is used, skip Spring AOT and do CDS only. `process-aot` runs the main method and prepares the context (without creating the beans), so config imports and the properties that conditions read must resolve at build time, where no config server is reachable; give it the same stub file as the measurement runs (`config_stub.py`) and `spring.cloud.config.enabled=false`.
+- **Passing properties to `process-aot`.** Pass them as JVM system properties. In one project `-Dspring-boot.aot.arguments=--key=value` did not reach the app while `-Dspring-boot.aot.jvmArguments="-Dkey=value -Dother=value"` (or `<jvmArguments>` in the `process-aot` execution) did. Gradle: `tasks.named("processAot") { jvmArgs("-Dkey=value") }`. Verify by checking the generated `__BeanDefinitions` sources or the startup log for the profile.
 - Dev tools, `@MockBean`-heavy test setups and some older libraries are not AOT-friendly. Keep AOT off for the test classpath unless the project already runs tests that way.
 
 ## CDS (Class Data Sharing), Boot 3.3+
@@ -81,6 +83,45 @@ degrades instead of crashing.
 The archive is rejected when any of these differ between training and run: JDK build, CPU
 architecture, classpath entries or their order, or the jar contents (hence the extracted layout).
 Build the archive inside the image build, never on a developer laptop.
+
+## CDS on Boot 3.0 to 3.2 (by hand)
+
+Boot 3.0 to 3.2 has no `-Djarmode=tools extract`, and CDS cannot archive classes loaded from
+nested jars in a fat jar. Unpack the jar and run it with a plain classpath. Two rules that are easy
+to miss:
+
+- **No directories on the classpath.** The JDK refuses to create or use a dynamic archive when the
+  classpath contains a non-empty directory, so `BOOT-INF/classes` must be packed into a jar first.
+- **Keep the classpath order of `BOOT-INF/classpath.idx`.** It is the order the fat jar uses; a
+  different order can pick a different class when two jars contain the same one, and any change of
+  order between training and run rejects the archive.
+
+```bash
+rm -rf target/cds && mkdir -p target/cds && cd target/cds
+unzip -q ../<artifact>-<version>.jar
+jar cf app-classes.jar -C BOOT-INF/classes .
+MAIN=$(grep '^Start-Class:' META-INF/MANIFEST.MF | cut -d' ' -f2 | tr -d '\r')
+CP="app-classes.jar:$(sed -E 's/^- "(.*)"$/\1/' BOOT-INF/classpath.idx | paste -sd: -)"
+
+# training run (Boot 3.2: spring.context.exit exists; 3.0/3.1: start, wait for "Started", then kill -TERM, not -9)
+java -XX:ArchiveClassesAtExit=app.jsa -Dspring.context.exit=onRefresh -cp "$CP" "$MAIN"
+# run, with the exact same classpath string
+java -XX:SharedArchiveFile=app.jsa -cp "$CP" "$MAIN"
+```
+
+Add `-Dspring.aot.enabled=true` to both lines when the jar was built with `process-aot`. Check the
+archive with `-Xshare:on` as below. In a Dockerfile, copy `app-classes.jar` and `BOOT-INF/lib/`,
+keep the same relative paths, and build `CP` the same way in the training stage and the
+`ENTRYPOINT`. Measure the unpacked layout without the archive first (step (a) of tier 3), because
+dropping the nested-jar loader is a gain of its own.
+
+## Memory during training runs
+
+A training run is a full application start plus archive dumping, and it needs more memory than a
+normal start. Run one JVM at a time: do not train while measurement JVMs or other containers are
+running. Exit code 137 means the process was killed (SIGKILL), usually by the OOM killer or Docker
+Desktop's memory limit. Close other JVMs, check free memory and the Docker VM's memory setting,
+and run it again alone before concluding anything about CDS.
 
 ## JDK AOT cache (Project Leyden), JDK 24+
 

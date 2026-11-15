@@ -15,6 +15,8 @@ unsure what a starter pulls in).
 | `spring-boot-devtools` in a production image | Restarter classloader, LiveReload server | Mark `optional`/`developmentOnly`; verify it is absent from the final jar |
 | Micrometer registries you do not scrape (`prometheus`, `datadog`, `newrelic`, `statsd` all present) | Each registry starts a publisher thread and binds meters | Keep one |
 | Spring Cloud (`config`, `eureka`, `consul`, `vault`, `bootstrap`) | Bootstrap context, remote config fetch with retries before the main context even starts | Check whether discovery/config is still used; set `spring.cloud.config.fail-fast` and sensible timeouts |
+| Spring Cloud config client with `@RefreshScope` | Spring AOT does not support refresh scope; `process-aot` fails | Grep `@RefreshScope` before tier 3. Unused at runtime: `spring.cloud.refresh.enabled=false`. Used: skip Spring AOT, do CDS only |
+| Many `${...}` placeholders without default (config from Config Server, Vault or env) | The app cannot start locally, so nothing can be measured | `project_scan.sh` counts them; generate stubs with `config_stub.py` and start with `--spring.config.additional-location=file:<stub>` |
 | Both `spring-boot-starter-web` and `webflux` | Two server stacks on the classpath; Boot picks one, the other still gets scanned | Remove one |
 | Hibernate Validator, Jackson modules, Thymeleaf/Freemarker not used | Classpath scanning and module registration | Remove |
 | Large transitive trees (AWS SDK v1 full bundle, Google client libs) | Class count directly drives class-loading time, roughly 1 ms per 1 000 classes before CDS | Use per-service artifacts (`software.amazon.awssdk:s3` not `aws-java-sdk`) |

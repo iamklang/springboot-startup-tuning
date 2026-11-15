@@ -20,12 +20,12 @@ All scripts live in `scripts/` next to this file. Call them with absolute paths.
 | Script | What it does |
 |---|---|
 | `project_scan.sh <project-dir>` | Detects build tool, Boot/Java version, starters, config files, Dockerfile, k8s manifests, JVM flags, existing tuning knobs. Run first. |
-| `measure_startup.sh -n 5 -l LABEL -o results.csv [-u HEALTH_URL] -- <java args>` | Starts the app N times, parses the `Started ... in X seconds (process running for Y)` line, optionally polls a health URL until HTTP 200, prints median/min/max, appends a CSV row. Kills the app after each run. |
+| `measure_startup.sh -n 5 -l LABEL -o results.csv [-u HEALTH_URL] -- <java args>` | Starts the app N times, parses the `Started ... in X seconds (process running for Y)` line, optionally polls a health URL until HTTP 200, prints median/min/max, appends a CSV row. Kills the app after each run. Ends with `RESULT: OK` or `RESULT: FAIL` (failures also go to stderr and to a FAIL row in the CSV); rejects glued arguments and runs where Spring time exceeds process time; warns on high load. |
+| `config_stub.py <project-dir> -o stub.properties` | Finds `${...}` placeholders with no default and no value in config, guesses each type from the bound field, and writes harmless stub values (closed-port URLs, non-secret strings) so an app that depends on a Config Server, Vault or env vars can start locally. |
 | `cpu_sweep.sh --image IMG [--env-file F] [--mem 1g] [-o sweep.csv]` or `--jar app.jar --jvm-only` | Measures startup under several CPU limits and reports the knee point where more CPU stops helping. Docker mode also reports CPU-seconds consumed by the start, and refuses an image whose architecture does not match the host. |
 | `startup_report.py <actuator-startup.json or URL>` | Ranks the slowest startup steps and bean instantiations from the `/actuator/startup` endpoint. |
 | `autoconfig_report.py <log with debug=true>` | Lists positive auto-configurations from the CONDITIONS EVALUATION REPORT and flags ones that are often unnecessary. |
 | `measure_first_requests.sh -R 3 -n 100 -r READY_URL -u URL [-u URL] [-o CSV] [-d CURVE_CSV] -- <java args>` | Restarts the app R times, waits for readiness, sends N sequential requests over the given URLs, and reports request 1, the mean of requests 2 to 10, steady state and the first/steady ratio. Without java args it measures an app that is already running. |
-
 | `measure_efficiency.sh -r RATE [-w 30] [-d 60] -R READY_URL -u URL [-u URL] [-o CSV] (-p PID \| -- <java args>)` | Runs a fixed-rate warm-up and measured phase (open model) and reports p50/p99/p99.9, CPU ms per request, KB allocated per request, RSS and heap used. |
 | `loadgen.py -r RATE -d SECONDS URL...` | The open-model load generator used by `measure_efficiency.sh`; latency is measured from each request's scheduled time, so stalls are not hidden. |
 
@@ -41,8 +41,12 @@ reach tier 3, and `references/kubernetes.md` when writing the CPU recommendation
 
 - Identify the project directory. If the current directory has no `pom.xml` or `build.gradle(.kts)`, search one level down, then ask the user which project.
 - Run `project_scan.sh`. Note Boot version, Java version, build tool, whether Actuator is present, and whether a Dockerfile or image exists. Several later choices depend on these (CDS needs Boot 3.3+, JDK AOT cache needs JDK 24+, lazy init needs Boot 2.2+).
-- Check `java -version` and `docker info`. If Docker is not running, say so once and use `--jvm-only` for the CPU sweep; do not try to start the daemon.
+- Check `java -version` and the scan's `docker:` line, which shows the daemon state at scan time and the real error when it is unreachable. If Docker is not running, say so once and use `--jvm-only` for the CPU sweep; do not try to start the daemon. If a Docker step fails later, re-check with `docker version` before blaming the image: the daemon can go down mid-session.
+- Check the machine: the scan's `machine:` line or `uptime`. If the 1-minute load is above about half the CPU count, stop other work or wait before measuring, and note the load in the report. A busy machine makes every number slow and noisy and can produce impossible readings.
+- Run measurement batches through bash. On macOS the default shell is zsh, which does not word-split an unquoted `$VAR`, so `$JAVA_ARGS` in a loop reaches java as one argument and every run fails. Write the batch as a bash script with arrays (`ARGS=(-Xshare:auto -jar app.jar); measure_startup.sh ... -- "${ARGS[@]}"`) or wrap it in `bash -c '...'`. After each batch, check that every configuration printed `RESULT: OK` and added a CSV row before reading the numbers.
 - Ask how the app is normally started if it is not obvious (profile, env vars, external DB). An app that cannot reach its database will fail or hang at startup, and measuring that is useless. Prefer a local profile, Testcontainers, or an H2/embedded fallback the project already has. Never invent credentials.
+- If the scan reports placeholders without default, or a config client (Config Server, Vault, Consul), the app will not start without its remote config. Run `config_stub.py <project> -o <workspace>/stub.properties`, review the `CHECK` lines (enums and custom types need a real value), and start every measured run with `--spring.config.additional-location=file:<workspace>/stub.properties --spring.cloud.config.enabled=false`. Fix any remaining startup error one property at a time; the error names it. Say in the report that the app was measured with stub config.
+- If Step 5 or 6 may run (the user asks about first requests, latency, throughput, cost, or the whole job), ask now for 2 to 5 hot-path URLs that are safe to call repeatedly (idempotent, no side effects) and any auth header they need. Without them Steps 5 and 6 cannot run; asking at the end wastes the session.
 - Never commit. Make every change as an ordinary file edit the user can diff and revert.
 
 ### Step 1: Static review
@@ -67,7 +71,7 @@ Typical high-value findings:
 1. Build once: `mvn -q -DskipTests package` or `./gradlew bootJar -x test`. Reuse the jar for every measurement in this step. Rebuilding between runs changes file-cache state and skews results.
 2. Run `measure_startup.sh -n 5 -w 1 -l baseline -o <workspace>/results.csv -- -jar <jar> <app args>`. The `-w 1` warm-up run is discarded so disk cache does not favour later configurations. For web apps add `--server.port=0` to the app args so a port left open by a previous run never fails a measurement. Use the same `-n` for every later configuration.
    When the app has Actuator, also take one measurement with `-u http://localhost:<port>/actuator/health/readiness` and a fixed port. The `ready` column is wall time until the endpoint answers 200, which is what a readiness probe actually waits for; it includes the gap after the `Started` line (runners, `ApplicationReadyEvent` listeners) that neither log number shows.
-3. Record **both** numbers from the log line. `in X seconds` is Spring's own time. `process running for Y` includes JVM start and class loading, and is the closest log number to what a readiness probe experiences (the `ready` column above is the exact one). If Y minus X is large (more than about 30 percent of Y), the problem is JVM/class loading and tiers 2 and 3 will matter more than bean tuning.
+3. Record **both** numbers from the log line. Spring's time is part of process time, so a run where `in X` is larger than `running for Y` is a bad reading (log from another start, clock trouble or extreme load); the script marks it FAIL. Do not keep a baseline taken while the scan or `uptime` showed high load. `in X seconds` is Spring's own time. `process running for Y` includes JVM start and class loading, and is the closest log number to what a readiness probe experiences (the `ready` column above is the exact one). If Y minus X is large (more than about 30 percent of Y), the problem is JVM/class loading and tiers 2 and 3 will matter more than bean tuning.
 4. If Actuator is present, get a startup timeline: expose `startup` (`--management.endpoints.web.exposure.include=startup`) and, if the main class does not already set `BufferingApplicationStartup`, add it temporarily so the endpoint has data. Fetch `/actuator/startup` and run `startup_report.py` on it. Without Actuator, run once with `--debug` and feed the log to `autoconfig_report.py` instead.
    The scripts need the `Started ... in X seconds` line. If it is missing, check for `spring.main.log-startup-info=false` or a root log level above INFO, and override them on the command line for the measurement (`--spring.main.log-startup-info=true`). JSON structured logging is fine: the line is still matched inside the JSON message.
 5. Keep a workspace dir (for example `<project>/.startup-tuning/`) for CSVs, logs and reports, and tell the user it can be deleted. Add it to `.gitignore` only if the user agrees.
@@ -93,7 +97,7 @@ needs to see what did not work as much as what did.
 Machines drift: other processes, thermal throttling and file cache change the numbers over the
 session. Compare each candidate against a control measured in the same batch (re-run the current
 best configuration right before or after the candidate), not against a baseline from an hour ago.
-If the control itself has moved by more than its spread, say so and re-measure.
+If the control itself has moved by more than its spread, say so and re-measure. (In one session the same control moved from 4.23 s to 4.82 s; a candidate compared against the old number would have looked 12 percent worse for no reason.)
 
 After tier 3, re-check the tier 1 changes you kept by toggling each one off on top of the final
 configuration. Spring AOT and CDS remove much of the work that tier 1 knobs were saving (bean
@@ -126,8 +130,13 @@ before reverting: confirm the archive maps (`-Xshare:on`, `-Xlog:cds`), confirm 
 used the same jar, flags and JDK as the measured run, and re-measure in a fresh batch. Report a
 verified null result as such; it is a real finding on that machine.
 
+Run training runs and measurements one JVM at a time, with no other JVMs or containers running. A training run needs more memory than a normal start; exit code 137 means it was killed (usually out of memory), not that CDS does not work. Re-run it alone.
+
+Before Spring AOT on an app with a Spring Cloud config client, grep `@RefreshScope` (the scan counts it): AOT does not support refresh scope. Pass properties to `process-aot` as JVM system properties (`-Dspring-boot.aot.jvmArguments="-D..."`), not as application arguments. Details in `references/cds-aot.md`.
+
 Choose by versions found in Step 0:
 - Boot 3.3+ on JDK 17 to 23: Spring AOT (`process-aot` / `processAot`, run with `-Dspring.aot.enabled=true`) plus CDS training run and `-XX:SharedArchiveFile`. Buildpacks: `BP_JVM_CDS_ENABLED=true`, `BP_SPRING_AOT_ENABLED=true`.
+- Boot 3.0 to 3.2: Spring AOT plus CDS by hand: unpack the jar, pack `BOOT-INF/classes` into a jar (CDS refuses directories on the classpath) and keep the `BOOT-INF/classpath.idx` order. The recipe is in `references/cds-aot.md`.
 - JDK 24+: replace CDS with the JDK AOT cache (`-XX:AOTCache`); on JDK 25 use the one-step `-XX:AOTCacheOutput`. Boot 4 is built for this.
 - These need the jar extracted (`-Djarmode=tools extract`) and an identical JDK, architecture and classpath order between training and runtime. Put the training run in the Dockerfile so the archive is rebuilt with every image; a stale archive is silently ignored and the gain vanishes without an error.
 - Spring AOT fixes the bean graph at build time: profiles and `@ConditionalOnProperty` are evaluated during `process-aot`. Pass the production profile to `process-aot` and to the training run. A mismatch either fails at startup with an error naming the bean, or silently runs the build-time bean set; neither is visible until it is tested with the real profile.
