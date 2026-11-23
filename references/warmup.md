@@ -109,7 +109,9 @@ Validator metadata, MapStruct and service classes were identical.
 app:
   warmup:
     enabled: true
-    paths: /api/orders?customer=1,/api/products/42
+    paths: /api/orders?customer=1,/api/products/42     # GETs
+    post:                                               # optional, side-effect-free POSTs only
+      "[/api/quote]": '{"customer":"c1","lines":[{"sku":"a","qty":2}]}'
     iterations: 3
     max-duration: 20s
 management:
@@ -121,9 +123,19 @@ management:
 | Property | Meaning |
 |---|---|
 | `enabled` | Turns the runner on. Missing means off. |
-| `paths` | Comma-separated paths, query strings allowed, no commas inside a path. |
+| `paths` | GET paths, comma-separated, query strings allowed, no commas inside a path. No default: an empty list logs a warning and skips. `server.servlet.context-path` is prepended, so write paths without it. |
+| `post` | Map of path to JSON body, sent as POST with `Content-Type: application/json`. Keep the brackets around the key in YAML (`"[/api/quote]"`) or the slashes are dropped. Only for endpoints that cannot change state: quote, validate, dry-run. Without it a validated POST endpoint stays cold: on the demo its first call was 45 ms with GET-only warm-up and 1.6 ms with this. |
 | `iterations` | Rounds. Each round calls every path once, so total requests = iterations × number of paths (6 in the example). Default 3. Start at 1 to 3: the costs removed are one-time, and on the demo one round gave almost all of the gain (table below). Raise it only when the measurement shows requests 2 to 10 still clearly above steady state. |
-| `max-duration` | Hard time budget. The runner stops when it runs out, even mid-round. It must fit inside the startupProbe window. |
+| `max-duration` | Hard time budget. The runner stops when it runs out, even mid-round, and logs it. It must fit inside the startupProbe window. |
+
+The runner skips itself, with a log line, when there is no embedded server (tests with a mock
+environment) or when `server.ssl.enabled=true`, because a loopback HTTPS call would need the server's
+certificate in a trust store. It calls `server.address` when that is set, otherwise `127.0.0.1`.
+
+Validated with the install steps above on Boot 3.0.4, 3.5.7 and 4.0.0 (JDK 21, Security, JPA,
+validation): it compiles unchanged, the log shows `0 failed, 0 non-2xx`, request 1 of every warmed
+endpoint drops to steady state, and `WarmupObservationFilter` keeps warm-up calls out of
+`http.server.requests` while a client sending `X-Warmup: true` is still counted.
 
 ### How much warm-up is enough: measured
 
@@ -164,10 +176,10 @@ traffic. The template's filter covers Spring MVC only; WebFlux needs the reactiv
 ### Choosing paths
 
 - Pick 2 to 5 of the most-called endpoints: one that queries the database, one that serializes a large DTO, one with validation. Use the same URLs as the `-u` arguments of `measure_first_requests.sh`, so the measurement shows the effect.
-- Only idempotent reads. The template sends GET only. No path may write data, send a message, or call another service. Confirm this with the user for every path, and refuse payment, order-creation or notification endpoints.
+- Only side-effect-free requests: GETs in `paths`, and POSTs in `post` only for endpoints that compute and return (quote, validate, dry-run). No request may write data, send a message, or call another service. Confirm this with the user for every path, and refuse payment, order-creation or notification endpoints.
 - Use IDs that exist in every environment. A 404 returns before the service and repository code run, so it warms only part of the path.
 - Endpoints behind authentication answer 401 to the template, which warms only the filter chain. Choose public read endpoints, or add a warm-up credential header that the app reads from its own configuration (for example a client-credentials token for a local-only scope). Never disable security for warm-up, and never put a real user's token in config.
-- To warm a validated POST, extend the template to send a deliberately invalid body that Bean Validation rejects with 400. First check that nothing writes or calls out before validation runs (no `@Transactional` work in a filter or an interceptor ahead of the controller).
+- To warm a POST endpoint that does write, do not call it. Either warm a side-effect-free sibling that uses the same request DTO and validation (a `/validate` or dry-run endpoint), or send a deliberately invalid body that Bean Validation rejects with 400 and accept the `non-2xx` warning. In both cases first check that nothing writes or calls out before validation runs (no `@Transactional` work in a filter or an interceptor ahead of the controller).
 
 ### Verify
 
@@ -183,7 +195,7 @@ traffic. The template's filter covers Spring MVC only; WebFlux needs the reactiv
 - Never fail startup because warm-up failed. The template logs and continues. Release the readiness gate **before** logging and before touching metrics, so a failure in those cannot hold the pod out of the Service.
 - A readiness gate as a `HealthIndicator` (bean name `warmup`, `management.endpoint.health.group.readiness.include=readinessState,warmup`) is a one-way latch that is already in place at the first probe, so it has no race. But **Boot validates group membership at startup**: a group naming a contributor that does not exist throws `NoSuchHealthContributorException` and the context fails. Register the indicator unconditionally and have it report UP with detail `disabled` when warm-up is off; put only the runner behind `@ConditionalOnProperty`.
 - One tag-key set per meter name. A Prometheus registry **silently drops** a second meter that reuses a name with different tag keys — verified on Micrometer 1.12.4: the registry logs through `meterRegistrationFailed` and does not throw, so a `warmup.failures{reason}` counter registered after `warmup.failures{reason,target}` never appears in the scrape and an alert on it can never fire.
-- The template has no `@Order`, so it runs after the app's other runners (data loading, cache priming). Keep it that way unless the user has a reason.
+- The template has no `@Order`, so it runs with the lowest precedence. Runners that load data or prime caches must run first: give them an `@Order` with a smaller value **on the runner class**. Observed on Boot 3.0.4: `@Order` on an `@Bean` method that returns an `ApplicationRunner` was ignored, the warm-up ran before the seed data existed and logged `404 ... warms only part of the path`; the same order on the class worked. Boot 3.5.7 honoured both.
 - Exclude warm-up requests from metrics and traces with `WarmupObservationFilter` (above). Business code that counts events itself (audit, analytics) can check the same header against `WarmupRunner.TOKEN`. Never accept a fixed header value as proof of a warm-up request.
 - If the warm-up must run asynchronously, the app has to keep readiness down itself: publish `AvailabilityChangeEvent.publish(ctx, ReadinessState.REFUSING_TRAFFIC)` before and `ACCEPTING_TRAFFIC` after. Prefer the synchronous runner.
 - Under Spring AOT, set `management.endpoint.health.probes.enabled=true` explicitly, because cloud-platform detection is fixed at build time.
