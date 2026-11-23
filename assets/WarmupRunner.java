@@ -7,6 +7,7 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,6 +27,15 @@ import org.springframework.stereotype.Component;
  * still answers 503 and no user request is routed to the pod. Liveness is already CORRECT, so
  * keep the warm-up well inside the startupProbe budget.
  *
+ * Every request carries the header X-Warmup with a random token created at JVM start (TOKEN).
+ * WarmupObservationFilter.java uses it to keep warm-up calls out of http.server.requests and
+ * traces; a fixed value such as "true" could be sent by any client to hide its own requests.
+ *
+ * Iterations: the costs a warm-up removes are mostly one-time (class loading, Jackson and
+ * validation caches, Hibernate plans, MVC init). Measured on a Boot 3.5 demo, one round brought
+ * request 1 from 26/14/49 ms to 3.1/3.0/1.6 ms; twenty rounds only reached 1.7/1.9/1.1 ms while
+ * adding 20x the self-traffic. Start at 1 to 3 and raise it only if measurement shows a gain.
+ *
  * Rules: only idempotent requests (GET, or POSTs to endpoints with no side effects such as
  * validation-only or dry-run endpoints). Never call other services or write data. Failures are
  * logged and swallowed: a failed warm-up must never fail startup.
@@ -36,6 +46,9 @@ public class WarmupRunner implements ApplicationRunner {
 
   private static final Logger log = LoggerFactory.getLogger(WarmupRunner.class);
 
+  /** Per-JVM secret sent in the X-Warmup header; read by WarmupObservationFilter. */
+  public static final String TOKEN = UUID.randomUUID().toString();
+
   private final Environment env;
   private final List<String> paths;
   private final int iterations;
@@ -43,7 +56,7 @@ public class WarmupRunner implements ApplicationRunner {
 
   public WarmupRunner(Environment env,
       @Value("${app.warmup.paths:/actuator/health}") List<String> paths,
-      @Value("${app.warmup.iterations:50}") int iterations,
+      @Value("${app.warmup.iterations:3}") int iterations,
       @Value("${app.warmup.max-duration:20s}") Duration budget) {
     this.env = env;
     this.paths = paths;
@@ -73,7 +86,7 @@ public class WarmupRunner implements ApplicationRunner {
         try {
           HttpRequest req = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + path))
               .timeout(Duration.ofSeconds(5))
-              .header("X-Warmup", "true")
+              .header("X-Warmup", TOKEN)
               .GET()
               .build();
           HttpResponse<Void> res = client.send(req, HttpResponse.BodyHandlers.discarding());

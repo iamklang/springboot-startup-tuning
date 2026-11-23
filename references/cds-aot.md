@@ -196,6 +196,43 @@ Data connect lazily by default; Flyway does not).
 For JDK 24/25 replace the `ArchiveClassesAtExit` and `SharedArchiveFile` flags with the AOT
 cache flags above.
 
+### Training with real requests, when the archive should cover the request path
+
+`-Dspring.context.exit=onRefresh` exits before the app serves anything, so no connector, dispatch
+or serialization class from the request path is in the archive. To include them, the training run
+has to exercise a request and then exit *normally*, because the archive is written at JVM exit.
+Drive it from the app's own warm-up component rather than from shell polling, which needs a
+`wget`/`curl` in the base image and log parsing:
+
+```java
+// in the warm-up runner; the property is set only on the training RUN line
+@EventListener(ApplicationReadyEvent.class)
+void shutdownAfterTrainingRun(ApplicationReadyEvent event) {
+    if (properties.shutdownAfterWarmup()) {
+        event.getApplicationContext().close();
+    }
+}
+```
+
+```dockerfile
+RUN java -XX:ArchiveClassesAtExit=app.jsa @cp.args com.example.Application \
+    --spring.config.additional-location=file:./cds-training.properties \
+    --app.warmup.enabled=true --app.warmup.iterations=1 \
+    --app.warmup.shutdown-after-warmup=true
+```
+
+Close the context from `ApplicationReadyEvent`, not from inside the runner: a runner still runs
+inside `SpringApplication.run()`, and closing there leaves Spring publishing events on a closed
+context. Verify three things before trusting it: the `java` process really exits (a lingering
+non-daemon thread from a broker retry can hang the build; fall back to `System.exit(0)` after
+`close()`), how much build time the warm-up adds (expect seconds per unreachable dependency at its
+connect timeout), and that the existing `-Xshare:on -XX:+PrintSharedArchiveAndExit` check still
+passes.
+
+Remember what this does and does not buy: an archive carries **classes, not cache state**, and the
+tasks that need a database fail during `docker build`. See `warmup.md` sections 6 and 8 for the measured
+class-count differences.
+
 ## Buildpacks
 
 ```bash

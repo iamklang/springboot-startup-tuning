@@ -82,6 +82,16 @@ class; use grep to confirm what the timeline points at.
 - HPA minimum replicas and `terminationGracePeriodSeconds` do not affect startup but matter for rollout time; mention only if asked.
 - `JAVA_TOOL_OPTIONS` in the pod env overriding the Dockerfile flags.
 - Liveness probe on plain `/actuator/health`: the aggregate includes the database and other dependencies, so a DB blip restarts every pod. Use `/actuator/health/liveness` and `/actuator/health/readiness`.
+- `management.endpoint.health.group.*.include` naming a contributor that no bean provides: Boot validates group membership at startup and throws `NoSuchHealthContributorException`, so the whole context fails. A warm-up indicator in the readiness group must be registered unconditionally.
+- A readiness group that includes `db` (or any external dependency): one dependency blip marks every pod NotReady at once and empties the Service. Flag it; it is a judgment call, not automatically wrong.
+
+## Warm-up code, if the project has any (Step 5)
+
+- Warm-up targets chosen from a URL string or an HTTP verb rather than from the controller method's call graph: a `GET` can still reach another service or a write through response assembly. Trace the method.
+- Warm-up that serializes a service return value instead of the real response envelope: the envelope's serializer stays cold.
+- Two meters sharing a name with different tag keys (for example a per-target failure counter and a global one): a Prometheus registry drops the second silently, so the alert-able metric disappears. One tag-key set per name.
+- Warm-up state in the liveness group, a warm-up that can throw out of `run()`, or a readiness gate released after logging and metrics instead of before them.
+- Warm-up concurrency at or above `server.tomcat.threads.max` or the Hikari pool size, and loopback warm-up driven from the main thread in parallel: both can starve the probe that must answer during warm-up.
 
 ## Runtime efficiency (Step 6)
 
