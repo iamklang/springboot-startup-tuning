@@ -1,0 +1,6 @@
+# Accepted equivalent mutants: mutants no test can kill because the mutated program behaves identically.
+# One per line, TAB separated: class <TAB> line <TAB> mutator simple name <TAB> reason <TAB> approved by <TAB> date
+# The reason must say why no input can tell the two versions apart. Only the user approves entries.
+# quality_report.py reports the raw score and the score with these accepted; PIT's own gate uses the raw score.
+#
+# com.example.cart.Cart	42	ConditionalsBoundaryMutator	size is never 0 here: constructor rejects empty carts, so < and <= are identical	alice	2026-11-25
