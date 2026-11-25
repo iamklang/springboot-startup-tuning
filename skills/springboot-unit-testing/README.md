@@ -3,6 +3,10 @@
 Claude skill: write unit tests for a Spring Boot project until JaCoCo line and branch coverage and the
 PIT mutation score are both above 95 percent, without gaming the numbers.
 
+## Install
+
+See the repository README: install as a plugin, or run `./install.sh` to link it into `~/.claude/skills/`.
+
 | Path | What |
 |---|---|
 | `SKILL.md` | workflow: preflight, tooling, baseline, coverage, mutation, full gate, report; ground rules |

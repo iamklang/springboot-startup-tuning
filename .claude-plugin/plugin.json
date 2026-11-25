@@ -1,0 +1,8 @@
+{
+  "name": "springboot-skills",
+  "description": "Claude Code skills for Spring Boot services: startup and runtime tuning, and unit tests to 95 percent coverage and mutation score.",
+  "version": "1.0.0",
+  "author": { "name": "iamklang" },
+  "repository": "https://github.com/iamklang/springboot-startup-tuning",
+  "keywords": ["spring-boot", "java", "performance", "testing", "mutation-testing"]
+}

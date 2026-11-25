@@ -1,0 +1,12 @@
+{
+  "name": "iamklang-skills",
+  "owner": { "name": "iamklang" },
+  "description": "Spring Boot skills for Claude Code",
+  "plugins": [
+    {
+      "name": "springboot-skills",
+      "source": "./",
+      "description": "Startup and runtime tuning, and unit tests to 95 percent coverage and mutation score, for Spring Boot services."
+    }
+  ]
+}

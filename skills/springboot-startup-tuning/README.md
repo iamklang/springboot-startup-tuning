@@ -18,7 +18,7 @@ and autoscaling.
 
 ## Install
 
-Copy or clone this folder to `~/.claude/skills/springboot-startup-tuning/`.
+See the repository README: install as a plugin, or run `./install.sh` to link it into `~/.claude/skills/`.
 
 ## Contents
 
