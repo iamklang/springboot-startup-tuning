@@ -11,7 +11,8 @@ discipline between the training run and production.
 |---|---|---|
 | 3.3 to 3.5 | 17 to 23 | Spring AOT + CDS (`-XX:SharedArchiveFile`) |
 | 3.3 to 3.5 | 24+ | Spring AOT + JDK AOT cache (`-XX:AOTCache`); CDS still works but the AOT cache supersedes it |
-| 4.x | 25+ | Spring AOT + JDK AOT cache, one-step `-XX:AOTCacheOutput` |
+| 4.x | 17 to 23 | Spring AOT + CDS, same recipe as 3.3+ (measured on 4.1.3 / JDK 21 below) |
+| 4.x | 24+ | Spring AOT + JDK AOT cache; on 25+ the one-step `-XX:AOTCacheOutput` |
 | 3.0 to 3.2 | 17+ | Spring AOT, plus CDS by hand (see "CDS on Boot 3.0 to 3.2" below); recommend upgrading to 3.3+ |
 | 2.x | any | Neither; report the upgrade as the real fix |
 
@@ -35,6 +36,9 @@ Maven: the `spring-boot-maven-plugin` has a `process-aot` goal.
 Gradle: the Spring Boot plugin registers `processAot` automatically; `bootJar` depends on it when the
 `org.graalvm.buildtools.native` plugin is applied, otherwise run `./gradlew processAot bootJar`.
 
+Boot 4.1+: `-DskipTests` no longer skips `process-test-aot` (only `maven.test.skip` does). This
+matters only when the build configures test AOT, as the `native` profile does.
+
 Run with `java -Dspring.aot.enabled=true -jar app.jar`. Verify with the log line
 `Starting AOT-processed <App>`; without it the flag was ignored.
 
@@ -56,6 +60,10 @@ java -Djarmode=tools -jar target/<artifact>-<version>.jar extract --destination 
 ```
 
 The extracted jar keeps the original file name unless `--application-filename` is given; every command below assumes `app.jar`.
+
+Boot 4.1 removed `-Djarmode=layertools`. A Dockerfile with `layertools ... extract` must move to
+`java -Djarmode=tools -jar app.jar extract --layers --launcher --destination extracted`, which gives
+the same `dependencies/`, `spring-boot-loader/`, `snapshot-dependencies/`, `application/` folders.
 
 2. Training run. The app must start fully and then exit; `-XX:ArchiveClassesAtExit` writes the
 archive when the JVM exits. Boot's `extract` layout plus `-Dspring.context.exit=onRefresh` makes the
@@ -83,6 +91,19 @@ degrades instead of crashing.
 The archive is rejected when any of these differ between training and run: JDK build, CPU
 architecture, classpath entries or their order, or the jar contents (hence the extracted layout).
 Build the archive inside the image build, never on a developer laptop.
+
+Measured on Boot 4.1.3, JDK 21, Apple M4, demo app with Security, JPA + H2 and validation (median
+of 5, `process running for`, same batch):
+
+| Configuration | Startup |
+|---|---|
+| fat jar, `java -jar` | 2.59 s |
+| extracted | 1.97 s |
+| extracted + Spring AOT | 1.41 s |
+| extracted + Spring AOT + CDS (`spring.context.exit=onRefresh` training) | 0.82 s |
+
+`WarmupRunner` and `WarmupObservationFilter` still worked in the AOT + CDS build (they were enabled
+during `process-aot`), and readiness including the warm-up was 1.2 s.
 
 ## CDS on Boot 3.0 to 3.2 (by hand)
 

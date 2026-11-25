@@ -55,7 +55,7 @@ Search for these patterns (`grep -rn` across `src/main/java` and Kotlin sources)
 - `@Scheduled(initialDelay = 0)` or `fixedRate` tasks that start heavy work right at boot and compete for CPU with the remaining bean creation.
 - `@EnableAsync`, `@EnableScheduling`, `@EnableCaching` on apps that do not use them (each adds post-processors that proxy every bean).
 - `@ComponentScan` / `scanBasePackages` wider than the project (`com.company` instead of `com.company.thisservice`).
-- `@EnableJpaRepositories` with `basePackages` covering hundreds of repositories; also `spring.data.jpa.repositories.bootstrap-mode=deferred` or `lazy` lets repository proxies be created in a background thread.
+- `@EnableJpaRepositories` with `basePackages` covering hundreds of repositories; also `spring.data.jpa.repositories.bootstrap-mode=deferred` or `lazy` lets repository proxies be created in a background thread. Boot 4.1 adds `spring.jpa.bootstrap=async`, which builds the `EntityManagerFactory` on a background thread. `deferred` and `async` need an `AsyncTaskExecutor` bean; Boot's `applicationTaskExecutor` is enough, but it backs off when the app defines its own `Executor`. On 4.1 without one, startup fails with `An EntityManagerFactoryBean bootstrap executor is required` (verified on 4.1.3); `lazy` needs none. The gain grows with the entity model and the database round trips; on a 1-entity H2 demo (4.1.3) neither changed startup beyond noise, so measure before keeping it.
 - Static initializers that build large maps, load JSON fixtures, or compile regexes at class-load time in classes that are loaded at boot.
 - Manual `new RestTemplate()` / `WebClient` per bean versus a shared builder (many SSL contexts initialise slowly).
 - Kotlin: `kotlin-reflect` on the classpath plus heavy data classes; Jackson Kotlin module reflection at boot.
@@ -65,7 +65,8 @@ class; use grep to confirm what the timeline points at.
 
 ## 4. Dockerfile / container image
 
-- Base image JDK version versus the Boot version (Boot 3.x needs 17+, Boot 4 needs 25). Newer JDKs start noticeably faster.
+- Base image JDK version versus the Boot version (Boot 3.x and 4.x need 17+; Boot 4.1 with jOOQ needs 21+, because jOOQ 3.20 does). Newer JDKs start noticeably faster, and the JDK AOT cache needs 24+.
+- `-Djarmode=layertools` in the Dockerfile: removed in Boot 4.1, the build fails. Replace with `-Djarmode=tools extract --layers --launcher` (see `cds-aot.md`).
 - Fat jar run with `java -jar app.jar`: no layering, no CDS possible. Prefer the extracted layout (`-Djarmode=tools extract`) so the CDS/AOT training run and layer caching work.
 - `ENTRYPOINT` with `sh -c` wrapping: adds a shell process, breaks signal handling, and `exec` form is faster.
 - JVM flags present: `-Xshare`, `-XX:SharedArchiveFile`, `-XX:AOTCache`, GC choice, `MaxRAMPercentage`, `TieredStopAtLevel`. Note each one and whether it matches the CPU limit the app actually gets.

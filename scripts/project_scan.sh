@@ -112,6 +112,7 @@ for f in Dockerfile* docker/Dockerfile* src/main/docker/Dockerfile* ; do
   [ -f "$f" ] || continue
   echo "-- $f"
   grep -nE '^FROM|ENTRYPOINT|CMD|JAVA_TOOL_OPTIONS|JAVA_OPTS|-XX:|-Xshare|-Xm[sx]|jarmode|AOTCache|SharedArchiveFile|spring\.aot' "$f" | sed 's/^/  /'
+  grep -q 'jarmode=layertools' "$f" && echo "  WARNING: jarmode=layertools was removed in Boot 4.1; use -Djarmode=tools extract --layers --launcher"
 done
 grep -qsE 'build-image|bootBuildImage|BP_JVM_CDS|BP_SPRING_AOT' pom.xml build.gradle build.gradle.kts 2>/dev/null && echo "buildpacks config present (check BP_JVM_CDS_ENABLED / BP_SPRING_AOT_ENABLED)"
 K8S=$(grep -rlE 'kind:\s*(Deployment|StatefulSet|Rollout|CronJob)' --include='*.yml' --include='*.yaml' . 2>/dev/null | grep -vE 'node_modules|/target/|/build/|src/main/resources' | head -10)

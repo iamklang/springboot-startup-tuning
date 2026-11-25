@@ -132,10 +132,12 @@ The runner skips itself, with a log line, when there is no embedded server (test
 environment) or when `server.ssl.enabled=true`, because a loopback HTTPS call would need the server's
 certificate in a trust store. It calls `server.address` when that is set, otherwise `127.0.0.1`.
 
-Validated with the install steps above on Boot 3.0.4, 3.5.7 and 4.0.0 (JDK 21, Security, JPA,
+Validated with the install steps above on Boot 3.0.4, 3.5.7, 4.0.0 and 4.1.3 (JDK 21, Security, JPA,
 validation): it compiles unchanged, the log shows `0 failed, 0 non-2xx`, request 1 of every warmed
 endpoint drops to steady state, and `WarmupObservationFilter` keeps warm-up calls out of
-`http.server.requests` while a client sending `X-Warmup: true` is still counted.
+`http.server.requests` while a client sending `X-Warmup: true` is still counted. On 4.1.3 it also
+worked in a Spring AOT + CDS build, with `spring.jpa.bootstrap=async`, with deferred repositories and
+with `spring.datasource.connection-fetch=lazy`.
 
 ### How much warm-up is enough: measured
 
@@ -333,6 +335,7 @@ Use these to set expectations, not as promises. Ratios transfer better than abso
 | AWS Lambda SnapStart with priming | p50 5,048 ms | 1,178 ms | checkpoint after warm-up |
 | This skill's demo app, M4, Boot 3.4, JPA + Jackson | request 1: 57.6 ms (24x steady) | 2.5 ms (1.2x steady) | `WarmupRunner`, 100 loopback requests, about 0.25 s added to readiness |
 | This skill's second demo, M4, Boot 3.5.7, Security + JPA + validation | request 1: 26 / 14 / 49 ms | 3.1 / 3.0 / 1.6 ms | one loopback round (3 requests), 0.17 s added to readiness |
+| Same demo, Boot 4.1.3 | request 1: about 26 / 22 / 45 ms | 2.3 / 2.1 / 1.4 ms | 3 rounds (9 requests), about 0.14 s added to readiness |
 
 Archive coverage, same app and image (Boot 3.2.4, JDK 21, `amazoncorretto:21.0.1-alpine`, classes in
 the CDS dictionary). Use it to size the expected gain of training with requests, not as a latency promise:
