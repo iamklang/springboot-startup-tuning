@@ -96,6 +96,22 @@ void late_fee_starts_after_grace_period(int daysLate, String expected) {
 }
 ```
 
+Exceptions: everything except the call under test is built before the lambda (SonarQube S5778
+counts constructors and calls to helpers too), and the type and message are both asserted (S5958):
+
+```java
+@Test
+void create_rejects_more_than_100_items() {
+  List<InvoiceItem> items = items(101);                 // built outside the lambda
+  Customer acme = new Customer("acme");
+
+  assertThatThrownBy(() -> service.create(acme, items))
+      .isInstanceOf(IllegalArgumentException.class)
+      .hasMessage("an invoice has at most 100 items");
+  then(repo).shouldHaveNoInteractions();
+}
+```
+
 BigDecimal: compare with `isEqualByComparingTo("12.50")`; use `isEqualTo(new BigDecimal("12.50"))`
 only when the scale is part of the contract (rounding code), because `setScale` mutants survive
 `isEqualByComparingTo`.
@@ -203,3 +219,10 @@ These raise the numbers without testing anything. They are not allowed, even to 
 - Catch-all `try { ... } catch (Exception e) {}` in tests, `Thread.sleep`, real time, real network,
   random data without a fixed seed.
 - Several behaviours in one test; near-duplicate tests that kill nothing new.
+- Anything `sonar_test_lint.py` reports (`sonar-test-rules.md`), and `// NOSONAR` or
+  `@SuppressWarnings("java:S...")` to hide it. The shapes most often written by mistake:
+  `public` test classes or methods (S5786), `Mockito.when(...)` instead of a static import (S8924),
+  `mock(...)` fields under `MockitoExtension` (S9015), `assertThat(list.size()).isEqualTo(2)` instead
+  of `hasSize(2)` (S5838), several `assertThat(x)` in a row on the same variable (S5853), arguments
+  built inside an `assertThatThrownBy` lambda (S5778), every argument wrapped in `eq(...)` (S6068),
+  three or more tests that differ only by values (S5976).

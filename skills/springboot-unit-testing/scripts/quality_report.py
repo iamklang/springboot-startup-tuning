@@ -3,6 +3,7 @@
 
 Usage: quality_report.py [--project DIR] [--coverage 95] [--mutation 95] [--max 40]
                          [--allowlist test-quality/equivalent-mutants.tsv] [--class PREFIX]
+                         [--pass-with-equivalents]
 
 Finds reports in Maven (target/) or Gradle (build/) locations. Exit 0 when every gate passes,
 1 when a gate fails, 2 when a report is missing.
@@ -10,6 +11,9 @@ Finds reports in Maven (target/) or Gradle (build/) locations. Exit 0 when every
 Allowlist (accepted equivalent mutants), tab separated, one per line, '#' comments:
   <fully.qualified.Class>  <line>  <MutatorSimpleName>  <reason a reviewer can check>
 Accepted mutants are reported separately; the raw score is always printed too.
+The mutation gate passes on the RAW score (what PIT's mutationThreshold uses). Only with
+--pass-with-equivalents, which needs the user's explicit decision, does the score with approved
+equivalent mutants decide.
 """
 import argparse, os, sys, xml.etree.ElementTree as ET
 from collections import defaultdict
@@ -54,6 +58,8 @@ def main():
     ap.add_argument("--max", type=int, default=40, help="max work-list entries per section")
     ap.add_argument("--allowlist", default="test-quality/equivalent-mutants.tsv")
     ap.add_argument("--class", dest="cls", default="", help="only classes starting with this prefix")
+    ap.add_argument("--pass-with-equivalents", action="store_true",
+                    help="let the score with approved equivalents pass the gate (user decision only)")
     a = ap.parse_args()
     proj = a.project
     src_roots = ["src/main/java", "src/main/kotlin"]
@@ -142,7 +148,7 @@ def main():
         raw_score = pct(detected, total)
         adj_score = pct(detected + len(accepted), total)
         strength = pct(detected, total - no_cov)
-        ok = adj_score >= a.mutation
+        ok = raw_score >= a.mutation or (a.pass_with_equivalents and adj_score >= a.mutation)
         failed |= not ok
         # mutations.xml carries partial="true" even for full runs (PIT 1.30), so it says nothing; with
         # --class or a -DtargetClasses run, only part of the module was mutated
@@ -151,7 +157,8 @@ def main():
         print(f"mutation score {raw_score:.1f}% (PIT mutationThreshold uses this)   test strength {strength:.1f}%")
         if accepted:
             print(f"accepted equivalent mutants: {len(accepted)} -> score with allowlist {adj_score:.1f}%")
-        print(f"target {a.mutation:g}%   {'PASS' if ok else 'FAIL'}")
+        basis = "raw, or with approved equivalents" if a.pass_with_equivalents else "raw score"
+        print(f"target {a.mutation:g}% ({basis})   {'PASS' if ok else 'FAIL'}")
         stale = set(allow) - used
         if stale:
             print(f"allowlist entries that matched no surviving mutant (remove them): {len(stale)}")

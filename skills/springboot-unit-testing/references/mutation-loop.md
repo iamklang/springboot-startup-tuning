@@ -65,9 +65,11 @@ Protocol:
 4. Report both numbers: raw score (PIT's gate) and the score with approved equivalents.
    `quality_report.py` prints both and lists allowlist entries that no longer match.
 
-PIT's own `mutationThreshold` always uses the raw score. If approved equivalents keep the raw score
-below 95, the user chooses: set the PIT threshold to the raw number reached and gate CI on
-`quality_report.py` (exit code 1 below target), or accept the raw gate as it is.
+PIT's own `mutationThreshold` and `quality_report.py` both pass or fail on the raw score. Approved
+equivalents change only the second number. If they keep the raw score below 95, the gate fails and
+the user chooses: fix the code that produces them (often a dead or duplicated guard), or set the PIT
+threshold to the raw number reached and gate CI on `quality_report.py --pass-with-equivalents`. Do
+not make that choice for them.
 
 ## Suspected bugs
 

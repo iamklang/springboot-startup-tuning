@@ -3,7 +3,7 @@
 | Skill | What it does |
 |---|---|
 | [`springboot-startup-tuning`](skills/springboot-startup-tuning/) | Review, measure and tune startup time, first-request warm-up and steady-state CPU, memory and latency; Kubernetes requests, limits and probes |
-| [`springboot-unit-testing`](skills/springboot-unit-testing/) | Write unit tests until JaCoCo line and branch coverage and the PIT mutation score are above 95 percent, with guards against gaming the numbers |
+| [`springboot-unit-testing`](skills/springboot-unit-testing/) | Write unit tests until JaCoCo line and branch coverage and the raw PIT mutation score are at least 95 percent and the tests pass SonarQube's test rules, with guards against gaming the numbers |
 
 ## Install
 
